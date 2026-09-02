@@ -1,0 +1,15 @@
+{
+  "name": "whatsapp-daily-reaction-bot",
+  "version": "1.0.0",
+  "description": "Bot diário de imagens e monitoramento de reações no WhatsApp",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@wppconnect-team/wppconnect": "^2.3.1",
+    "mongodb": "^7.6.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}
