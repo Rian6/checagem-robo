@@ -10,7 +10,7 @@ const { MongoClient } = require("mongodb");
 const MONGO_URI = "mongodb://127.0.0.1:27017";
 const MONGO_DATABASE = "whatsapp_bot";
 
-const GRUPO = "RPG do bom";
+const GRUPO = "GOJ TEMPLO VIVO";
 
 const PASTA_IMAGENS = path.join(
     __dirname,
