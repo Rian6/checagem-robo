@@ -1,6 +1,9 @@
 {
-  "grupo": "IGNORA",
-  "horario_envio": "08:00",
+  "grupos": [
+    "RPG do bom",
+    "GOJ TEMPLO VIVO"
+  ],
+  "horario_envio": "05:00",
   "pasta_imagens": "imagens",
   "intervalo_reacao": 2000
 }
