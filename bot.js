@@ -19,7 +19,7 @@ const dias = [
     "terca.jpg",
     "quarta.jpg",
     "quinta.jpg",
-    "sexta.jpg",
+    "sexta.png",
     "sabado.jpg"
 ];
 
