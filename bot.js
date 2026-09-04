@@ -13,7 +13,17 @@ const MONGO_URI = "mongodb://127.0.0.1:27017";
 const MONGO_DATABASE = "whatsapp_bot";
 const MONGO_COLLECTION = "reacoes";
 
-const NOME_IMAGEM = "terca.jpg";
+const dias = [
+    "domingo.jpg",
+    "segunda.jpg",
+    "terca.jpg",
+    "quarta.jpg",
+    "quinta.jpg",
+    "sexta.jpg",
+    "sabado.jpg"
+];
+
+const NOME_IMAGEM = dias[new Date().getDay()];
 
 const DURACAO_MONITORAMENTO = 24 * 60 * 60 * 1000;
 
@@ -617,11 +627,10 @@ async function enviarNotificacaoReacao({
         // =====================================================
 
         const mensagemBot =
-            `🤖 BOT DA CHECAGEM:
-
-            Às ${hora}, *${nomePessoa}* (${grupoOrigemNome}) estava ${estado}
-            
-            Computando resultado...`;
+            `🤖 *BOT DA CHECAGEM*\n\n` +
+            `Às *${hora}*, *${nomePessoa}* (${grupoOrigemNome}) ` +
+            `reportou que estava ${estado} 🍆\n\n` +
+            `✅ Voto registrado com sucesso!`;
 
         console.log(
             "\n📢 ENVIANDO RESULTADO PARA TODOS OS GRUPOS:"
@@ -1449,13 +1458,17 @@ async function enviarChecagemParaGrupo({
             }
         );
 
-    const legenda =
-
-        `🍆 *CHECAGEM DE PAU 2.0* 🍆\n\n` +
-
-        `📅 *Data:* ${data}\n\n` +
-
-        `⚠️ *Atenção:* Checagem oficial de paus, favor votar corretamente para analise. `;
+        const legenda =
+            `🚨🍆 *CHECAGEM DE PAU DIÁRIA* 🍆🚨\n\n` +
+            `📅 *Data:* ${data}\n\n` +
+            `Senhores, está oficialmente aberta a checagem de hoje.\n\n` +
+            `Reajam a *esta mensagem* de acordo com a situação atual:\n\n` +
+            `👍 *DURO*\n` +
+            `❤️ *MOLE*\n\n` +
+            `⚠️ *Não esqueçam de reagir!* Sua participação será computada nas estatísticas oficiais da checagem.\n\n` +
+            `📊 *Dashboard da Checagem:*\n` +
+            `https://www.server-home.space/\n\n` +
+            `Boa checagem a todos. 🫡🍆`;
 
     try {
 
