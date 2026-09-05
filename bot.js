@@ -12,6 +12,7 @@ const CONFIG_PATH = path.join(__dirname, "config.json");
 const MONGO_URI = "mongodb://127.0.0.1:27017";
 const MONGO_DATABASE = "whatsapp_bot";
 const MONGO_COLLECTION = "reacoes";
+const MONGO_ENVIOS_COLLECTION = "envios";
 
 const dias = [
     "domingo.jpg",
@@ -22,8 +23,6 @@ const dias = [
     "sexta.png",
     "sabado.jpg"
 ];
-
-const NOME_IMAGEM = dias[new Date().getDay()];
 
 const DURACAO_MONITORAMENTO = 24 * 60 * 60 * 1000;
 
@@ -38,27 +37,11 @@ let config = {
     intervalo_reacao: 2000
 };
 
-// Guarda a última data em que cada grupo recebeu a checagem
+// =====================================================
+// MEMÓRIA
+// =====================================================
+
 const ultimosEnvios = new Map();
-
-// =====================================================
-// MONITORAMENTOS
-// =====================================================
-//
-// Cada mensagem enviada possui seu próprio monitoramento.
-//
-// {
-//   messageId,
-//   grupoId,
-//   grupoNome,
-//   mensagem,
-//   inicio,
-//   fim,
-//   reacoes: Map(),
-//   timeout
-// }
-//
-
 const monitoramentos = new Map();
 
 // =====================================================
@@ -68,17 +51,115 @@ const monitoramentos = new Map();
 let mongoClient;
 let db;
 let reacoesCollection;
+let enviosCollection;
 
 // =====================================================
-// CARREGA CONFIG
+// UTILIDADES
+// =====================================================
+
+function esperar(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function normalizarNomeGrupo(nome) {
+    return (nome || "")
+        .trim()
+        .toLowerCase();
+}
+
+function obterNomeImagemAtual(data = new Date()) {
+    return dias[data.getDay()];
+}
+
+function dataAtual() {
+    return new Date().toLocaleDateString("pt-BR");
+}
+
+function chaveDataLocal(data) {
+    const ano = data.getFullYear();
+    const mes = String(data.getMonth() + 1).padStart(2, "0");
+    const dia = String(data.getDate()).padStart(2, "0");
+
+    return `${ano}-${mes}-${dia}`;
+}
+
+function horarioEmData(dataBase, horario = config.horario_envio) {
+    const [hora, minuto] = String(horario)
+        .split(":")
+        .map(Number);
+
+    const data = new Date(dataBase);
+
+    data.setHours(
+        Number.isFinite(hora) ? hora : 8,
+        Number.isFinite(minuto) ? minuto : 0,
+        0,
+        0
+    );
+
+    return data;
+}
+
+// =====================================================
+// CICLO DA CHECAGEM
+// =====================================================
+
+/*
+ * Exemplo horário = 08:00
+ *
+ * 05/09 15:00
+ * ciclo = 05/09 08:00 até 06/09 08:00
+ *
+ * 06/09 05:00
+ * ainda pertence ao ciclo iniciado em 05/09 08:00
+ *
+ * Isso permite reiniciar o bot antes do próximo horário
+ * e recuperar a mensagem anterior.
+ */
+
+function obterCicloAtivo(agora = new Date()) {
+    const horarioHoje = horarioEmData(
+        agora,
+        config.horario_envio
+    );
+
+    let inicio;
+
+    if (agora >= horarioHoje) {
+        inicio = horarioHoje;
+    } else {
+        const ontem = new Date(agora);
+
+        ontem.setDate(
+            ontem.getDate() - 1
+        );
+
+        inicio = horarioEmData(
+            ontem,
+            config.horario_envio
+        );
+    }
+
+    const fim = new Date(inicio);
+
+    fim.setDate(
+        fim.getDate() + 1
+    );
+
+    return {
+        ciclo: chaveDataLocal(inicio),
+        inicio,
+        fim
+    };
+}
+
+// =====================================================
+// CONFIG.JSON
 // =====================================================
 
 function carregarConfig() {
-
     try {
-
         if (!fs.existsSync(CONFIG_PATH)) {
-
             console.error(
                 `❌ Arquivo config.json não encontrado: ${CONFIG_PATH}`
             );
@@ -93,30 +174,12 @@ function carregarConfig() {
 
         const novoConfig = JSON.parse(conteudo);
 
-        // -------------------------------------------------
-        // COMPATIBILIDADE
-        // -------------------------------------------------
-        //
-        // Aceita:
-        //
-        // "grupo": "IGNORA"
-        //
-        // ou:
-        //
-        // "grupos": ["IGNORA", "OUTRO"]
-        //
-
         let grupos = [];
 
         if (Array.isArray(novoConfig.grupos)) {
-
             grupos = novoConfig.grupos;
-
         } else if (typeof novoConfig.grupo === "string") {
-
-            grupos = [
-                novoConfig.grupo
-            ];
+            grupos = [novoConfig.grupo];
         }
 
         grupos = grupos
@@ -131,46 +194,25 @@ function carregarConfig() {
             );
 
         config = {
-
             ...config,
-
             ...novoConfig,
-
             grupos
-
         };
 
         console.log("\n=================================");
         console.log(" CONFIGURAÇÃO ATUALIZADA");
         console.log("=================================");
-
-        console.log(
-            "Grupos:",
-            config.grupos
-        );
-
-        console.log(
-            "Horário:",
-            config.horario_envio
-        );
-
-        console.log(
-            "Pasta imagens:",
-            config.pasta_imagens
-        );
-
+        console.log("Grupos:", config.grupos);
+        console.log("Horário:", config.horario_envio);
+        console.log("Pasta imagens:", config.pasta_imagens);
         console.log(
             "Intervalo reação:",
             config.intervalo_reacao,
             "ms"
         );
-
-        console.log(
-            "=================================\n"
-        );
+        console.log("=================================\n");
 
     } catch (erro) {
-
         console.error(
             "❌ Erro ao carregar config.json:",
             erro.message
@@ -179,26 +221,17 @@ function carregarConfig() {
 }
 
 // =====================================================
-// MONITORA ALTERAÇÕES NO CONFIG.JSON
+// MONITORA CONFIG.JSON
 // =====================================================
 
 function monitorarArquivoConfig() {
-
     fs.watchFile(
         CONFIG_PATH,
         {
             interval: 1000
         },
-        (
-            curr,
-            prev
-        ) => {
-
-            if (
-                curr.mtimeMs !==
-                prev.mtimeMs
-            ) {
-
+        (curr, prev) => {
+            if (curr.mtimeMs !== prev.mtimeMs) {
                 console.log(
                     "\n🔄 config.json alterado!"
                 );
@@ -214,18 +247,13 @@ function monitorarArquivoConfig() {
 }
 
 // =====================================================
-// IDENTIFICA RESULTADO DA REAÇÃO
+// IDENTIFICA RESULTADO
 // =====================================================
 
 function identificarResultado(emote) {
-
     if (!emote) {
         return null;
     }
-
-    // -------------------------------------------------
-    // Remove modificadores de tom de pele
-    // -------------------------------------------------
 
     const emoteNormalizado =
         emote.replace(
@@ -233,23 +261,15 @@ function identificarResultado(emote) {
             ""
         );
 
-    // -------------------------------------------------
     // 👍 = DURO
-    // -------------------------------------------------
 
-    if (
-        emoteNormalizado === "👍"
-    ) {
-
+    if (emoteNormalizado === "👍") {
         return "DURO";
     }
 
-    // -------------------------------------------------
     // CORAÇÕES = MOLE
-    // -------------------------------------------------
 
     const coracoes = [
-
         "❤️",
         "🧡",
         "💛",
@@ -262,15 +282,9 @@ function identificarResultado(emote) {
         "🩷",
         "🩵",
         "🩶"
-
     ];
 
-    if (
-        coracoes.includes(
-            emoteNormalizado
-        )
-    ) {
-
+    if (coracoes.includes(emoteNormalizado)) {
         return "MOLE";
     }
 
@@ -278,43 +292,35 @@ function identificarResultado(emote) {
 }
 
 // =====================================================
-// MONGODB
+// CONECTA MONGODB
 // =====================================================
 
 async function conectarMongo() {
+    console.log("\n=================================");
+    console.log(" CONECTANDO AO MONGODB");
+    console.log("=================================");
 
-    console.log(
-        "\n================================="
+    mongoClient = new MongoClient(
+        MONGO_URI
     );
-
-    console.log(
-        " CONECTANDO AO MONGODB"
-    );
-
-    console.log(
-        "================================="
-    );
-
-    mongoClient =
-        new MongoClient(
-            MONGO_URI
-        );
 
     await mongoClient.connect();
 
-    db =
-        mongoClient.db(
-            MONGO_DATABASE
-        );
+    db = mongoClient.db(
+        MONGO_DATABASE
+    );
 
-    reacoesCollection =
-        db.collection(
-            MONGO_COLLECTION
-        );
+    reacoesCollection = db.collection(
+        MONGO_COLLECTION
+    );
 
-    // -------------------------------------------------
-    // Índice
-    // -------------------------------------------------
+    enviosCollection = db.collection(
+        MONGO_ENVIOS_COLLECTION
+    );
+
+    // =================================================
+    // ÍNDICES REAÇÕES
+    // =================================================
 
     await reacoesCollection.createIndex(
         {
@@ -326,12 +332,36 @@ async function conectarMongo() {
         }
     );
 
+    // =================================================
+    // ÍNDICES ENVIOS
+    // =================================================
+
+    await enviosCollection.createIndex(
+        {
+            grupoId: 1,
+            ciclo: 1
+        },
+        {
+            unique: true
+        }
+    );
+
+    await enviosCollection.createIndex(
+        {
+            enviadoEm: -1
+        }
+    );
+
     console.log(
         `Banco: ${MONGO_DATABASE}`
     );
 
     console.log(
-        `Coleção: ${MONGO_COLLECTION}`
+        `Coleção reações: ${MONGO_COLLECTION}`
+    );
+
+    console.log(
+        `Coleção envios: ${MONGO_ENVIOS_COLLECTION}`
     );
 
     console.log(
@@ -340,11 +370,10 @@ async function conectarMongo() {
 }
 
 // =====================================================
-// SALVAR / ATUALIZAR REAÇÃO
+// SALVAR REAÇÃO
 // =====================================================
 
 async function salvarReacaoMongo({
-
     messageId,
     grupoId,
     grupoNome,
@@ -355,64 +384,41 @@ async function salvarReacaoMongo({
     emote,
     resultado,
     timestamp
-
 }) {
-
     if (!reacoesCollection) {
-
         throw new Error(
             "MongoDB ainda não está conectado."
         );
     }
 
-    const agora =
-        new Date();
+    const agora = new Date();
 
     const resultadoMongo =
         await reacoesCollection.updateOne(
-
             {
                 messageId,
                 participantId
             },
-
             {
                 $set: {
-
                     messageId,
-
                     grupoId,
-
-                    // NOVO
                     grupoNome,
-
                     fromMe,
-
                     participantId,
-
                     name,
-
                     telefone,
-
                     emote,
-
                     resultado,
-
                     isDeleted: false,
-
                     timestamp,
-
-                    updatedAt:
-                        agora
+                    updatedAt: agora
                 },
 
                 $setOnInsert: {
-
-                    createdAt:
-                        agora
+                    createdAt: agora
                 }
             },
-
             {
                 upsert: true
             }
@@ -453,9 +459,7 @@ async function deletarReacaoMongo(
     messageId,
     participantId
 ) {
-
     if (!reacoesCollection) {
-
         throw new Error(
             "MongoDB ainda não está conectado."
         );
@@ -463,23 +467,15 @@ async function deletarReacaoMongo(
 
     const resultado =
         await reacoesCollection.deleteOne({
-
             messageId,
-
             participantId
-
         });
 
-    if (
-        resultado.deletedCount > 0
-    ) {
-
+    if (resultado.deletedCount > 0) {
         console.log(
             "🗑️ REAÇÃO DELETADA DO MONGODB"
         );
-
     } else {
-
         console.log(
             "⚠️ Reação não encontrada no MongoDB."
         );
@@ -492,21 +488,15 @@ async function deletarReacaoMongo(
 // CONTAR REAÇÕES
 // =====================================================
 
-async function contarReacoes(
-    messageId
-) {
-
+async function contarReacoes(messageId) {
     if (!reacoesCollection) {
-
         throw new Error(
             "MongoDB ainda não está conectado."
         );
     }
 
     return await reacoesCollection.countDocuments({
-
         messageId
-
     });
 }
 
@@ -514,12 +504,8 @@ async function contarReacoes(
 // BUSCAR REAÇÕES
 // =====================================================
 
-async function buscarReacoes(
-    messageId
-) {
-
+async function buscarReacoes(messageId) {
     if (!reacoesCollection) {
-
         throw new Error(
             "MongoDB ainda não está conectado."
         );
@@ -527,20 +513,204 @@ async function buscarReacoes(
 
     return await reacoesCollection
         .find({
-
             messageId
-
         })
         .sort({
-
             timestamp: 1
-
         })
         .toArray();
 }
 
 // =====================================================
-// ENVIA NOTIFICAÇÃO DA REAÇÃO
+// PERSISTÊNCIA DOS ENVIOS
+// =====================================================
+
+async function salvarEnvioMongo({
+    messageId,
+    grupoId,
+    grupoNome,
+    ciclo,
+    enviadoEm
+}) {
+    if (!enviosCollection) {
+        throw new Error(
+            "Coleção de envios ainda não disponível."
+        );
+    }
+
+    await enviosCollection.updateOne(
+        {
+            grupoId,
+            ciclo
+        },
+        {
+            $set: {
+                messageId,
+                grupoId,
+                grupoNome,
+                ciclo,
+                enviadoEm,
+                atualizadoEm: new Date()
+            },
+
+            $setOnInsert: {
+                criadoEm: new Date()
+            }
+        },
+        {
+            upsert: true
+        }
+    );
+
+    console.log(
+        `💾 Envio persistido: ${grupoNome} / ${ciclo}`
+    );
+}
+
+async function buscarEnvioDoCiclo(
+    grupoId,
+    ciclo
+) {
+    if (!enviosCollection) {
+        return null;
+    }
+
+    return await enviosCollection.findOne({
+        grupoId,
+        ciclo
+    });
+}
+
+// =====================================================
+// MIGRAÇÃO DA VERSÃO ANTIGA
+// =====================================================
+
+/*
+ * Antes dessa versão não existia coleção "envios".
+ *
+ * Se já houver reação no Mongo para a mensagem antiga,
+ * conseguimos recuperar o messageId por ela.
+ */
+
+async function buscarEnvioLegadoPelasReacoes({
+    grupoId,
+    grupoNome,
+    ciclo,
+    inicio,
+    fim
+}) {
+    const registro =
+        await reacoesCollection.findOne(
+            {
+                grupoId,
+
+                $or: [
+                    {
+                        createdAt: {
+                            $gte: inicio,
+                            $lt: fim
+                        }
+                    },
+
+                    {
+                        updatedAt: {
+                            $gte: inicio,
+                            $lt: fim
+                        }
+                    }
+                ]
+            },
+            {
+                sort: {
+                    createdAt: -1,
+                    updatedAt: -1
+                }
+            }
+        );
+
+    if (!registro?.messageId) {
+        return null;
+    }
+
+    const envio = {
+        messageId:
+            registro.messageId,
+
+        grupoId,
+
+        grupoNome:
+            registro.grupoNome ||
+            grupoNome,
+
+        ciclo,
+
+        enviadoEm:
+            registro.createdAt ||
+            inicio
+    };
+
+    await salvarEnvioMongo(
+        envio
+    );
+
+    console.log(
+        `♻️ Envio antigo recuperado pelas reações: ${envio.messageId}`
+    );
+
+    return envio;
+}
+
+// =====================================================
+// CARREGA REAÇÕES DO MONGO PARA MEMÓRIA
+// =====================================================
+
+async function carregarReacoesNoMonitoramento(
+    monitoramento
+) {
+    const registros =
+        await buscarReacoes(
+            monitoramento.messageId
+        );
+
+    for (const registro of registros) {
+        monitoramento.reacoes.set(
+            registro.participantId,
+            {
+                fromMe:
+                    registro.fromMe ?? false,
+
+                participantId:
+                    registro.participantId,
+
+                name:
+                    registro.name || "",
+
+                telefone:
+                    registro.telefone || "",
+
+                emote:
+                    registro.emote || "",
+
+                resultado:
+                    registro.resultado || null,
+
+                isDeleted:
+                    registro.isDeleted ?? false,
+
+                timestamp:
+                    registro.timestamp,
+
+                total:
+                    registros.length
+            }
+        );
+    }
+
+    return registros.length;
+}
+
+// =====================================================
+// NOTIFICAÇÃO DA REAÇÃO
 // =====================================================
 
 async function enviarNotificacaoReacao({
@@ -551,11 +721,6 @@ async function enviarNotificacaoReacao({
     timestamp
 }) {
     try {
-
-        // =====================================================
-        // CONFIG ATUAL
-        // =====================================================
-
         const configAtual = config;
 
         if (
@@ -570,20 +735,12 @@ async function enviarNotificacaoReacao({
             return;
         }
 
-        // =====================================================
-        // IDENTIFICA O RESULTADO
-        // =====================================================
-
         const resultado =
             identificarResultado(emote);
 
         if (!resultado) {
             return;
         }
-
-        // =====================================================
-        // CONVERTE PARA TEXTO
-        // =====================================================
 
         let estado;
 
@@ -594,10 +751,6 @@ async function enviarNotificacaoReacao({
         } else {
             return;
         }
-
-        // =====================================================
-        // HORÁRIO
-        // =====================================================
 
         const data = timestamp
             ? new Date(timestamp)
@@ -613,18 +766,10 @@ async function enviarNotificacaoReacao({
                 }
             );
 
-        // =====================================================
-        // NOME
-        // =====================================================
-
         const nomePessoa =
             name && name.trim()
                 ? name.trim()
                 : "Pessoa desconhecida";
-
-        // =====================================================
-        // MENSAGEM
-        // =====================================================
 
         const mensagemBot =
             `🤖 *BOT DA CHECAGEM*\n\n` +
@@ -640,42 +785,29 @@ async function enviarNotificacaoReacao({
             mensagemBot
         );
 
-        // =====================================================
-        // BUSCA GRUPOS DO WHATSAPP
-        // =====================================================
-
         const gruposWhatsApp =
-            await encontrarGrupos(client);
-
-        // =====================================================
-        // ENVIA PARA CADA GRUPO PARTICIPANTE
-        // =====================================================
+            await encontrarGrupos(
+                client
+            );
 
         for (
             const nomeGrupo
             of configAtual.grupos
         ) {
-
             const alvo =
-                nomeGrupo
-                    .trim()
-                    .toLowerCase();
+                normalizarNomeGrupo(
+                    nomeGrupo
+                );
 
             const grupo =
                 gruposWhatsApp.find(
                     grupo =>
-                        grupo.name &&
-                        grupo.name
-                            .trim()
-                            .toLowerCase() === alvo
+                        normalizarNomeGrupo(
+                            grupo.name
+                        ) === alvo
                 );
 
-            // -------------------------------------------------
-            // GRUPO NÃO ENCONTRADO
-            // -------------------------------------------------
-
             if (!grupo) {
-
                 console.log(
                     `⚠️ Grupo "${nomeGrupo}" não encontrado para notificação.`
                 );
@@ -683,12 +815,7 @@ async function enviarNotificacaoReacao({
                 continue;
             }
 
-            // -------------------------------------------------
-            // ENVIA
-            // -------------------------------------------------
-
             try {
-
                 await client.sendText(
                     grupo.id._serialized,
                     mensagemBot
@@ -699,22 +826,16 @@ async function enviarNotificacaoReacao({
                 );
 
             } catch (erro) {
-
                 console.error(
                     `❌ Erro enviando resultado para ${grupo.name}:`,
                     erro
                 );
             }
 
-            // -------------------------------------------------
-            // PEQUENO INTERVALO
-            // -------------------------------------------------
-
             await esperar(500);
         }
 
     } catch (erro) {
-
         console.error(
             "❌ Erro ao enviar notificações:",
             erro
@@ -723,19 +844,15 @@ async function enviarNotificacaoReacao({
 }
 
 // =====================================================
-// CONFIGURA MONITORAMENTO DAS REAÇÕES
+// LISTENER DE REAÇÕES
 // =====================================================
 
 function configurarMonitoramentoDeReacoes(
     client
 ) {
-
     client.onReactionMessage(
-
-        async (reaction) => {
-
+        async reaction => {
             try {
-
                 console.log(
                     "\n=============================="
                 );
@@ -748,9 +865,9 @@ function configurarMonitoramentoDeReacoes(
                     "=============================="
                 );
 
-                // -------------------------------------------------
-                // ID DA MENSAGEM
-                // -------------------------------------------------
+                // =============================================
+                // MESSAGE ID
+                // =============================================
 
                 const idMensagemReagida =
                     reaction.msgId?._serialized ||
@@ -761,9 +878,9 @@ function configurarMonitoramentoDeReacoes(
                     idMensagemReagida
                 );
 
-                // -------------------------------------------------
-                // PROCURA O MONITORAMENTO
-                // -------------------------------------------------
+                // =============================================
+                // MONITORAMENTO
+                // =============================================
 
                 const monitoramento =
                     monitoramentos.get(
@@ -771,7 +888,6 @@ function configurarMonitoramentoDeReacoes(
                     );
 
                 if (!monitoramento) {
-
                     console.log(
                         "⚠️ Essa mensagem não está sendo monitorada."
                     );
@@ -784,18 +900,16 @@ function configurarMonitoramentoDeReacoes(
                     monitoramento.grupoNome
                 );
 
-                // -------------------------------------------------
+                // =============================================
                 // PARTICIPANTE
-                // -------------------------------------------------
+                // =============================================
 
                 const participantId =
-
                     reaction.id?.participant ||
                     reaction.author ||
                     reaction.from;
 
                 if (!participantId) {
-
                     console.log(
                         "⚠️ Participante não identificado."
                     );
@@ -808,9 +922,9 @@ function configurarMonitoramentoDeReacoes(
                     participantId
                 );
 
-                // -------------------------------------------------
+                // =============================================
                 // EMOTE
-                // -------------------------------------------------
+                // =============================================
 
                 const emote =
                     reaction.reactionText ||
@@ -826,9 +940,9 @@ function configurarMonitoramentoDeReacoes(
                         : emote
                 );
 
-                // -------------------------------------------------
+                // =============================================
                 // RESULTADO
-                // -------------------------------------------------
+                // =============================================
 
                 const resultado =
                     isDeleted
@@ -843,22 +957,20 @@ function configurarMonitoramentoDeReacoes(
                     "IGNORADO"
                 );
 
-                // -------------------------------------------------
-                // DADOS DO USUÁRIO
-                // -------------------------------------------------
+                // =============================================
+                // CONTATO
+                // =============================================
 
                 let name = "";
                 let telefone = "";
 
                 try {
-
                     const contato =
                         await client.getContact(
                             participantId
                         );
 
                     if (contato) {
-
                         name =
                             contato.name ||
                             contato.pushname ||
@@ -873,30 +985,24 @@ function configurarMonitoramentoDeReacoes(
                     }
 
                 } catch (erro) {
-
                     console.log(
                         "⚠️ Não foi possível buscar contato:",
                         erro.message
                     );
                 }
 
-                // -------------------------------------------------
+                // =============================================
                 // FALLBACK NOME
-                // -------------------------------------------------
+                // =============================================
 
                 if (!name) {
-
                     try {
-
                         const mensagem =
                             await client.getMessageById(
                                 idMensagemReagida
                             );
 
-                        if (
-                            mensagem?.sender
-                        ) {
-
+                        if (mensagem?.sender) {
                             name =
                                 mensagem.sender.pushname ||
                                 mensagem.sender.formattedName ||
@@ -904,7 +1010,6 @@ function configurarMonitoramentoDeReacoes(
                         }
 
                     } catch (erro) {
-
                         console.log(
                             "⚠️ Não foi possível obter sender:",
                             erro.message
@@ -912,21 +1017,18 @@ function configurarMonitoramentoDeReacoes(
                     }
                 }
 
-                // -------------------------------------------------
                 // @LID NÃO É TELEFONE
-                // -------------------------------------------------
 
                 if (
                     telefone &&
                     telefone.includes("@")
                 ) {
-
                     telefone = "";
                 }
 
-                // -------------------------------------------------
+                // =============================================
                 // TIMESTAMP
-                // -------------------------------------------------
+                // =============================================
 
                 const timestamp =
                     reaction.timestamp ||
@@ -934,12 +1036,11 @@ function configurarMonitoramentoDeReacoes(
                         Date.now() / 1000
                     );
 
-                // =================================================
+                // =============================================
                 // REAÇÃO REMOVIDA
-                // =================================================
+                // =============================================
 
                 if (isDeleted) {
-
                     console.log(
                         "\n🗑️ PROCESSANDO REMOÇÃO..."
                     );
@@ -955,25 +1056,22 @@ function configurarMonitoramentoDeReacoes(
 
                 }
 
-                // =================================================
-                // REAÇÃO ADICIONADA / ALTERADA
-                // =================================================
+                // =============================================
+                // REAÇÃO ADICIONADA
+                // =============================================
 
                 else {
-
                     console.log(
                         "\n💾 PROCESSANDO REAÇÃO..."
                     );
 
                     const dadosReacao = {
-
                         messageId:
                             idMensagemReagida,
 
                         grupoId:
                             monitoramento.grupoId,
 
-                        // NOVO
                         grupoNome:
                             monitoramento.grupoNome,
 
@@ -994,24 +1092,13 @@ function configurarMonitoramentoDeReacoes(
                         timestamp
                     };
 
-                    // -------------------------------------------------
-                    // SALVA NO MONGO
-                    // -------------------------------------------------
-
                     await salvarReacaoMongo(
                         dadosReacao
                     );
 
-                    // -------------------------------------------------
-                    // MEMÓRIA
-                    // -------------------------------------------------
-
                     monitoramento.reacoes.set(
-
                         participantId,
-
                         {
-
                             fromMe:
                                 dadosReacao.fromMe,
 
@@ -1033,48 +1120,42 @@ function configurarMonitoramentoDeReacoes(
                         }
                     );
 
-                    // -------------------------------------------------
+                    // =========================================
                     // NOTIFICAÇÃO
-                    // -------------------------------------------------
+                    // =========================================
 
                     if (resultado) {
-
                         await enviarNotificacaoReacao({
                             client,
-                            grupoOrigemNome: monitoramento.grupoNome,
-                            emote,
-                            name,
-                            timestamp: timestamp * 1000
-                        });
 
+                            grupoOrigemNome:
+                                monitoramento.grupoNome,
+
+                            emote,
+
+                            name,
+
+                            timestamp:
+                                timestamp * 1000
+                        });
                     }
                 }
 
-                // =================================================
-                // TOTAL DO MONGO
-                // =================================================
+                // =============================================
+                // TOTAL
+                // =============================================
 
                 const total =
                     await contarReacoes(
                         idMensagemReagida
                     );
 
-                // -------------------------------------------------
-                // ATUALIZA TOTAL LOCAL
-                // -------------------------------------------------
-
                 for (
                     const registro
                     of monitoramento.reacoes.values()
                 ) {
-
-                    registro.total =
-                        total;
+                    registro.total = total;
                 }
-
-                // =================================================
-                // MOSTRA JSON
-                // =================================================
 
                 const registroAtual =
                     monitoramento.reacoes.get(
@@ -1087,37 +1168,21 @@ function configurarMonitoramentoDeReacoes(
 
                 console.log(
                     JSON.stringify(
-
                         registroAtual ||
-
                         {
-
                             participantId,
-
                             name,
-
                             telefone,
-
                             emote,
-
                             resultado,
-
                             isDeleted,
-
                             timestamp,
-
                             total
                         },
-
                         null,
-
                         2
                     )
                 );
-
-                // =================================================
-                // REAÇÕES DO MONGO
-                // =================================================
 
                 const reacoesMongo =
                     await buscarReacoes(
@@ -1151,7 +1216,6 @@ function configurarMonitoramentoDeReacoes(
                 );
 
             } catch (erro) {
-
                 console.error(
                     "\n❌ ERRO AO PROCESSAR REAÇÃO:"
                 );
@@ -1165,62 +1229,93 @@ function configurarMonitoramentoDeReacoes(
 }
 
 // =====================================================
-// INICIA MONITORAMENTO DE UMA MENSAGEM
+// INICIA / RECUPERA MONITORAMENTO
 // =====================================================
 
 async function iniciarMonitoramento({
-
-    mensagem,
+    mensagem = null,
+    messageId: messageIdInformado = null,
     grupoId,
-    grupoNome
-
+    grupoNome,
+    inicio = new Date(),
+    fim = new Date(
+        Date.now() +
+        DURACAO_MONITORAMENTO
+    ),
+    recuperado = false
 }) {
-
     const messageId =
-        mensagem.id?._serialized ||
-        mensagem.id;
+        messageIdInformado ||
+        mensagem?.id?._serialized ||
+        mensagem?.id;
+
+    if (!messageId) {
+        throw new Error(
+            `Não foi possível identificar o messageId de ${grupoNome}.`
+        );
+    }
+
+    // =============================================
+    // JÁ ESTÁ MONITORANDO
+    // =============================================
+
+    const existente =
+        monitoramentos.get(
+            messageId
+        );
+
+    if (existente) {
+        return existente;
+    }
+
+    const agora = new Date();
+
+    // =============================================
+    // CICLO JÁ TERMINOU
+    // =============================================
+
+    if (fim <= agora) {
+        console.log(
+            `⚠️ Monitoramento ignorado para ${grupoNome}: ciclo encerrado.`
+        );
+
+        return null;
+    }
 
     const monitoramento = {
-
         messageId,
-
         grupoId,
-
         grupoNome,
-
         mensagem,
-
-        inicio:
-            new Date(),
-
-        fim:
-            new Date(
-                Date.now() +
-                DURACAO_MONITORAMENTO
-            ),
-
-        reacoes:
-            new Map(),
-
-        timeout:
-            null
+        inicio,
+        fim,
+        recuperado,
+        reacoes: new Map(),
+        timeout: null
     };
-
-    // -------------------------------------------------
-    // Salva no mapa
-    // -------------------------------------------------
 
     monitoramentos.set(
         messageId,
         monitoramento
     );
 
+    // =============================================
+    // RECUPERA REAÇÕES EXISTENTES
+    // =============================================
+
+    const totalRecuperado =
+        await carregarReacoesNoMonitoramento(
+            monitoramento
+        );
+
     console.log(
         "\n================================="
     );
 
     console.log(
-        " MONITORAMENTO INICIADO"
+        recuperado
+            ? " MONITORAMENTO RECUPERADO"
+            : " MONITORAMENTO INICIADO"
     );
 
     console.log(
@@ -1243,48 +1338,50 @@ async function iniciarMonitoramento({
     );
 
     console.log(
-        "Duração: 24 horas"
+        "Início do ciclo:",
+        inicio.toLocaleString("pt-BR")
     );
 
     console.log(
-        "Início:",
-        monitoramento.inicio.toLocaleString(
-            "pt-BR"
-        )
+        "Fim do ciclo:",
+        fim.toLocaleString("pt-BR")
     );
 
     console.log(
-        "Fim:",
-        monitoramento.fim.toLocaleString(
-            "pt-BR"
-        )
+        "Reações recuperadas:",
+        totalRecuperado
     );
 
-    // -------------------------------------------------
-    // NÃO DELETA REAÇÕES DE OUTRAS MENSAGENS
-    // -------------------------------------------------
+    // =============================================
+    // NÃO APAGA MAIS AS REAÇÕES
+    // =============================================
 
-    await reacoesCollection.deleteMany({
+    /*
+     * IMPORTANTE:
+     *
+     * A versão anterior fazia:
+     *
+     * reacoesCollection.deleteMany({ messageId })
+     *
+     * Isso não pode ser feito aqui porque em caso
+     * de restart apagaríamos votos já registrados.
+     */
 
-        messageId
+    // =============================================
+    // TEMPO RESTANTE
+    // =============================================
 
-    });
-
-    console.log(
-        "Banco preparado para o novo monitoramento."
-    );
-
-    // -------------------------------------------------
-    // ENCERRAMENTO
-    // -------------------------------------------------
+    const tempoRestante =
+        Math.max(
+            1,
+            fim.getTime() -
+            Date.now()
+        );
 
     monitoramento.timeout =
         setTimeout(
-
             async () => {
-
                 try {
-
                     console.log(
                         "\n================================="
                     );
@@ -1315,17 +1412,17 @@ async function iniciarMonitoramento({
                     );
 
                 } catch (erro) {
-
                     console.error(
                         "❌ Erro ao encerrar monitoramento:",
                         erro
                     );
                 }
-
             },
 
-            DURACAO_MONITORAMENTO
+            tempoRestante
         );
+
+    return monitoramento;
 }
 
 // =====================================================
@@ -1335,7 +1432,6 @@ async function iniciarMonitoramento({
 async function mostrarReacoes(
     messageId
 ) {
-
     console.log(
         "\n===== REAÇÕES ATUAIS ====="
     );
@@ -1350,10 +1446,7 @@ async function mostrarReacoes(
             messageId
         );
 
-    if (
-        registros.length === 0
-    ) {
-
+    if (registros.length === 0) {
         console.log(
             "Nenhuma reação registrada."
         );
@@ -1368,13 +1461,8 @@ async function mostrarReacoes(
         "Desconhecido"
     );
 
-    for (
-        const registro
-        of registros
-    ) {
-
+    for (const registro of registros) {
         console.log(
-
             `${registro.emote} ${
                 registro.name ||
                 registro.participantId
@@ -1395,16 +1483,39 @@ async function mostrarReacoes(
 }
 
 // =====================================================
-// ENVIA CHECAGEM PARA UM GRUPO
+// ENCONTRA GRUPOS
+// =====================================================
+
+async function encontrarGrupos(
+    client
+) {
+    const chats =
+        await client.listChats();
+
+    const grupos =
+        chats.filter(
+            chat =>
+                chat.isGroup
+        );
+
+    console.log(
+        `📋 ${grupos.length} grupos encontrados no WhatsApp.`
+    );
+
+    return grupos;
+}
+
+// =====================================================
+// ENVIA CHECAGEM PARA GRUPO
 // =====================================================
 
 async function enviarChecagemParaGrupo({
-
     client,
-    grupo
-
+    grupo,
+    cicloInfo = obterCicloAtivo(
+        new Date()
+    )
 }) {
-
     console.log(
         "\n================================="
     );
@@ -1422,22 +1533,23 @@ async function enviarChecagemParaGrupo({
         grupo.name
     );
 
-    const imagem =
-        path.join(
+    // =============================================
+    // IMAGEM DO DIA
+    // =============================================
 
-            __dirname,
-
-            config.pasta_imagens,
-
-            NOME_IMAGEM
+    const nomeImagem =
+        obterNomeImagemAtual(
+            new Date()
         );
 
-    if (
-        !fs.existsSync(
-            imagem
-        )
-    ) {
+    const imagem =
+        path.join(
+            __dirname,
+            config.pasta_imagens,
+            nomeImagem
+        );
 
+    if (!fs.existsSync(imagem)) {
         console.error(
             `❌ Imagem não encontrada: ${imagem}`
         );
@@ -1458,19 +1570,72 @@ async function enviarChecagemParaGrupo({
             }
         );
 
-        const legenda =
-            `🚨🍆 *CHECAGEM DE PAU DIÁRIA* 🍆🚨\n\n` +
-            `📅 *Data:* ${data}\n\n` +
-            `Senhores, está oficialmente aberta a checagem de hoje.\n\n` +
-            `Reajam a *esta mensagem* de acordo com a situação atual:\n\n` +
-            `👍 *DURO*\n` +
-            `❤️ *MOLE*\n\n` +
-            `⚠️ *Não esqueçam de reagir!* Sua participação será computada nas estatísticas oficiais da checagem.\n\n` +
-            `📊 *Dashboard da Checagem:*\n` +
-            `https://www.server-home.space/\n\n` +
-            `Boa checagem a todos. 🫡🍆`;
+    const legenda =
+        `🚨🍆 *CHECAGEM DE PAU DIÁRIA* 🍆🚨\n\n` +
+        `📅 *Data:* ${data}\n\n` +
+        `Senhores, está oficialmente aberta a checagem de hoje.\n\n` +
+        `Reajam a *esta mensagem* de acordo com a situação atual:\n\n` +
+        `👍 *DURO*\n` +
+        `❤️ *MOLE*\n\n` +
+        `⚠️ *Não esqueçam de reagir!* Sua participação será computada nas estatísticas oficiais da checagem.\n\n` +
+        `📊 *Dashboard da Checagem:*\n` +
+        `https://www.server-home.space/\n\n` +
+        `Boa checagem a todos. 🫡🍆`;
 
     try {
+        // =============================================
+        // PROTEÇÃO CONTRA DUPLICIDADE
+        // =============================================
+
+        const envioExistente =
+            await buscarEnvioDoCiclo(
+                grupo.id._serialized,
+                cicloInfo.ciclo
+            );
+
+        if (envioExistente) {
+            console.log(
+                `♻️ ${grupo.name} já possui checagem no ciclo ${cicloInfo.ciclo}.`
+            );
+
+            console.log(
+                "Mensagem:",
+                envioExistente.messageId
+            );
+
+            ultimosEnvios.set(
+                normalizarNomeGrupo(
+                    grupo.name
+                ),
+                cicloInfo.ciclo
+            );
+
+            await iniciarMonitoramento({
+                messageId:
+                    envioExistente.messageId,
+
+                grupoId:
+                    grupo.id._serialized,
+
+                grupoNome:
+                    grupo.name,
+
+                inicio:
+                    cicloInfo.inicio,
+
+                fim:
+                    cicloInfo.fim,
+
+                recuperado:
+                    true
+            });
+
+            return;
+        }
+
+        // =============================================
+        // ENVIA
+        // =============================================
 
         console.log(
             "Enviando imagem..."
@@ -1478,18 +1643,13 @@ async function enviarChecagemParaGrupo({
 
         const mensagem =
             await client.sendImage(
-
                 grupo.id._serialized,
-
                 imagem,
-
-                NOME_IMAGEM,
-
+                nomeImagem,
                 legenda
             );
 
         if (!mensagem) {
-
             console.error(
                 `❌ WhatsApp não retornou mensagem para ${grupo.name}`
             );
@@ -1510,51 +1670,117 @@ async function enviarChecagemParaGrupo({
             messageId
         );
 
-        // -------------------------------------------------
-        // INICIA MONITORAMENTO
-        // -------------------------------------------------
+        // =============================================
+        // SALVA O ENVIO
+        // =============================================
 
-        await iniciarMonitoramento({
-
-            mensagem,
+        await salvarEnvioMongo({
+            messageId,
 
             grupoId:
                 grupo.id._serialized,
 
             grupoNome:
-                grupo.name
+                grupo.name,
+
+            ciclo:
+                cicloInfo.ciclo,
+
+            enviadoEm:
+                agora
         });
 
-        // -------------------------------------------------
-        // GUARDA ÚLTIMO ENVIO
-        // -------------------------------------------------
+        // =============================================
+        // MONITORAMENTO
+        // =============================================
+
+        await iniciarMonitoramento({
+            mensagem,
+
+            messageId,
+
+            grupoId:
+                grupo.id._serialized,
+
+            grupoNome:
+                grupo.name,
+
+            inicio:
+                cicloInfo.inicio,
+
+            fim:
+                cicloInfo.fim,
+
+            recuperado:
+                false
+        });
 
         ultimosEnvios.set(
-
-            grupo.id._serialized,
-
-            dataAtual()
+            normalizarNomeGrupo(
+                grupo.name
+            ),
+            cicloInfo.ciclo
         );
 
     } catch (erro) {
-
         console.error(
-
             `❌ Erro enviando para ${grupo.name}:`,
-
             erro
         );
+
+        throw erro;
     }
 }
 
 // =====================================================
-// ENVIA PARA TODOS OS GRUPOS
+// ENVIA PARA GRUPO PELO NOME
+// =====================================================
+
+async function enviarChecagemParaGrupoPorNome(
+    client,
+    nomeGrupo,
+    cicloInfo = obterCicloAtivo(
+        new Date()
+    )
+) {
+    const grupos =
+        await encontrarGrupos(
+            client
+        );
+
+    const alvo =
+        normalizarNomeGrupo(
+            nomeGrupo
+        );
+
+    const grupo =
+        grupos.find(
+            grupo =>
+                normalizarNomeGrupo(
+                    grupo.name
+                ) === alvo
+        );
+
+    if (!grupo) {
+        throw new Error(
+            `Grupo "${nomeGrupo}" não encontrado.`
+        );
+    }
+
+    await enviarChecagemParaGrupo({
+        client,
+        grupo,
+        cicloInfo
+    });
+}
+
+// =====================================================
+// ENVIA PARA TODOS
 // =====================================================
 
 async function enviarChecagemParaTodos(
     client
 ) {
-
     console.log(
         "\n================================="
     );
@@ -1572,10 +1798,7 @@ async function enviarChecagemParaTodos(
         config.grupos.length
     );
 
-    if (
-        config.grupos.length === 0
-    ) {
-
+    if (config.grupos.length === 0) {
         console.log(
             "⚠️ Nenhum grupo configurado."
         );
@@ -1583,39 +1806,32 @@ async function enviarChecagemParaTodos(
         return;
     }
 
-    // -------------------------------------------------
-    // Busca grupos do WhatsApp
-    // -------------------------------------------------
-
     const gruposWhatsApp =
         await encontrarGrupos(
             client
         );
 
-    // -------------------------------------------------
-    // Envia individualmente
-    // -------------------------------------------------
+    const cicloInfo =
+        obterCicloAtivo(
+            new Date()
+        );
 
     for (
         const nomeGrupo
         of config.grupos
     ) {
-
         const grupo =
             gruposWhatsApp.find(
-
                 grupo =>
-
-                    grupo.name
-                        ?.trim()
-                        .toLowerCase() ===
-                    nomeGrupo
-                        .trim()
-                        .toLowerCase()
+                    normalizarNomeGrupo(
+                        grupo.name
+                    ) ===
+                    normalizarNomeGrupo(
+                        nomeGrupo
+                    )
             );
 
         if (!grupo) {
-
             console.error(
                 `❌ Grupo "${nomeGrupo}" não encontrado.`
             );
@@ -1624,14 +1840,11 @@ async function enviarChecagemParaTodos(
         }
 
         await enviarChecagemParaGrupo({
-
             client,
-
-            grupo
-
+            grupo,
+            cicloInfo
         });
 
-        // Pequeno intervalo entre grupos
         await esperar(
             config.intervalo_reacao
         );
@@ -1639,198 +1852,285 @@ async function enviarChecagemParaTodos(
 }
 
 // =====================================================
-// ENCONTRA TODOS OS GRUPOS
+// RECUPERA CHECAGENS APÓS RESTART
 // =====================================================
 
-async function encontrarGrupos(
+async function recuperarOuGarantirChecagens(
     client
 ) {
+    console.log(
+        "\n================================="
+    );
 
-    const chats =
-        await client.listChats();
+    console.log(
+        " RECUPERANDO CHECAGENS"
+    );
 
-    const grupos =
-        chats.filter(
-            chat =>
-                chat.isGroup
+    console.log(
+        "================================="
+    );
+
+    const agora =
+        new Date();
+
+    const cicloInfo =
+        obterCicloAtivo(
+            agora
         );
 
     console.log(
-        `📋 ${grupos.length} grupos encontrados no WhatsApp.`
+        "Ciclo ativo:",
+        cicloInfo.ciclo
     );
 
-    return grupos;
-}
-
-// =====================================================
-// CONTROLE DO HORÁRIO
-// =====================================================
-
-function dataAtual() {
-
-    const agora =
-        new Date();
-
-    return agora
-        .toLocaleDateString(
+    console.log(
+        "Início:",
+        cicloInfo.inicio.toLocaleString(
             "pt-BR"
+        )
+    );
+
+    console.log(
+        "Próximo envio:",
+        cicloInfo.fim.toLocaleString(
+            "pt-BR"
+        )
+    );
+
+    const gruposWhatsApp =
+        await encontrarGrupos(
+            client
         );
-}
-
-// =====================================================
-// VERIFICA SE É HORA DE ENVIAR
-// =====================================================
-
-function verificarHorarioEnvio(
-    client
-) {
-
-    const agora =
-        new Date();
-
-    const horas =
-        String(
-            agora.getHours()
-        ).padStart(
-            2,
-            "0"
-        );
-
-    const minutos =
-        String(
-            agora.getMinutes()
-        ).padStart(
-            2,
-            "0"
-        );
-
-    const horarioAtual =
-        `${horas}:${minutos}`;
-
-    if (
-        horarioAtual !==
-        config.horario_envio
-    ) {
-
-        return;
-    }
-
-    const hoje =
-        dataAtual();
 
     for (
         const nomeGrupo
         of config.grupos
     ) {
-
-        // -------------------------------------------------
-        // Precisamos descobrir o ID para controlar
-        // envio duplicado.
-        //
-        // Como a função encontra o grupo posteriormente,
-        // usamos o nome como chave temporária.
-        // -------------------------------------------------
-
-        const chave =
-            nomeGrupo
-                .trim()
-                .toLowerCase();
-
-        const ultimoEnvio =
-            ultimosEnvios.get(
-                chave
+        const alvo =
+            normalizarNomeGrupo(
+                nomeGrupo
             );
 
-        if (
-            ultimoEnvio === hoje
-        ) {
+        const grupo =
+            gruposWhatsApp.find(
+                item =>
+                    normalizarNomeGrupo(
+                        item.name
+                    ) === alvo
+            );
+
+        if (!grupo) {
+            console.error(
+                `❌ Grupo "${nomeGrupo}" não encontrado durante recuperação.`
+            );
 
             continue;
         }
 
-        // -------------------------------------------------
-        // Marca imediatamente para impedir que dois ticks
-        // do intervalo iniciem dois envios.
-        // -------------------------------------------------
+        const grupoId =
+            grupo.id._serialized;
 
-        ultimosEnvios.set(
-            chave,
-            hoje
+        // =============================================
+        // PROCURA NA NOVA COLEÇÃO
+        // =============================================
+
+        let envio =
+            await buscarEnvioDoCiclo(
+                grupoId,
+                cicloInfo.ciclo
+            );
+
+        // =============================================
+        // FALLBACK PARA VERSÃO ANTIGA
+        // =============================================
+
+        if (!envio) {
+            envio =
+                await buscarEnvioLegadoPelasReacoes({
+                    grupoId,
+
+                    grupoNome:
+                        grupo.name,
+
+                    ciclo:
+                        cicloInfo.ciclo,
+
+                    inicio:
+                        cicloInfo.inicio,
+
+                    fim:
+                        cicloInfo.fim
+                });
+        }
+
+        // =============================================
+        // EXISTE MENSAGEM
+        // =============================================
+
+        if (envio) {
+            console.log(
+                `♻️ Recuperando mensagem de ${grupo.name}`
+            );
+
+            console.log(
+                "Message ID:",
+                envio.messageId
+            );
+
+            ultimosEnvios.set(
+                alvo,
+                cicloInfo.ciclo
+            );
+
+            await iniciarMonitoramento({
+                messageId:
+                    envio.messageId,
+
+                grupoId,
+
+                grupoNome:
+                    grupo.name,
+
+                inicio:
+                    cicloInfo.inicio,
+
+                fim:
+                    cicloInfo.fim,
+
+                recuperado:
+                    true
+            });
+
+            continue;
+        }
+
+        // =============================================
+        // NÃO EXISTE MENSAGEM
+        // =============================================
+
+        /*
+         * Estamos dentro de um ciclo que já começou.
+         *
+         * Portanto, se não existe mensagem registrada,
+         * enviamos AGORA.
+         *
+         * Não importa se são 08:01, 12:00 ou 22:00.
+         */
+
+        console.log(
+            `⚠️ Nenhuma checagem encontrada para ${grupo.name} no ciclo ${cicloInfo.ciclo}.`
         );
 
-        enviarChecagemParaGrupoPorNome(
+        console.log(
+            "📤 Horário do ciclo já passou. Enviando agora..."
+        );
 
+        await enviarChecagemParaGrupo({
             client,
+            grupo,
+            cicloInfo
+        });
 
-            nomeGrupo
-
-        ).catch(
-            erro => {
-
-                console.error(
-                    `❌ Erro no envio para ${nomeGrupo}:`,
-                    erro
-                );
-
-                // Permite tentar novamente caso tenha dado erro
-                ultimosEnvios.delete(
-                    chave
-                );
-            }
+        await esperar(
+            config.intervalo_reacao
         );
     }
+
+    console.log(
+        "=================================\n"
+    );
 }
 
 // =====================================================
-// ENVIA PARA GRUPO PELO NOME
+// VERIFICA NOVO CICLO
 // =====================================================
 
-async function enviarChecagemParaGrupoPorNome(
-
-    client,
-
-    nomeGrupo
-
+async function verificarHorarioEnvio(
+    client
 ) {
+    const agora =
+        new Date();
 
-    const grupos =
-        await encontrarGrupos(
-            client
+    const horarioHoje =
+        horarioEmData(
+            agora,
+            config.horario_envio
         );
 
-    const alvo =
-        nomeGrupo
-            .trim()
-            .toLowerCase();
+    // Ainda não chegou o horário de hoje.
 
-    const grupo =
-        grupos.find(
-
-            grupo =>
-
-                (
-                    grupo.name ||
-                    ""
-                )
-                    .trim()
-                    .toLowerCase() ===
-                alvo
-        );
-
-    if (!grupo) {
-
-        throw new Error(
-            `Grupo "${nomeGrupo}" não encontrado.`
-        );
+    if (agora < horarioHoje) {
+        return;
     }
 
-    await enviarChecagemParaGrupo({
+    const cicloHoje =
+        chaveDataLocal(
+            horarioHoje
+        );
 
-        client,
+    for (
+        const nomeGrupo
+        of config.grupos
+    ) {
+        const chave =
+            normalizarNomeGrupo(
+                nomeGrupo
+            );
 
-        grupo
+        // Já processamos esse ciclo em memória.
 
-    });
+        if (
+            ultimosEnvios.get(
+                chave
+            ) === cicloHoje
+        ) {
+            continue;
+        }
+
+        // Marca antes para evitar concorrência.
+
+        ultimosEnvios.set(
+            chave,
+            cicloHoje
+        );
+
+        const fim =
+            new Date(
+                horarioHoje
+            );
+
+        fim.setDate(
+            fim.getDate() + 1
+        );
+
+        try {
+            await enviarChecagemParaGrupoPorNome(
+                client,
+                nomeGrupo,
+                {
+                    ciclo:
+                        cicloHoje,
+
+                    inicio:
+                        horarioHoje,
+
+                    fim
+                }
+            );
+
+        } catch (erro) {
+            console.error(
+                `❌ Erro no envio para ${nomeGrupo}:`,
+                erro
+            );
+
+            // Permite tentar novamente.
+
+            ultimosEnvios.delete(
+                chave
+            );
+        }
+    }
 }
 
 // =====================================================
@@ -1840,7 +2140,6 @@ async function enviarChecagemParaGrupoPorNome(
 function iniciarScheduler(
     client
 ) {
-
     console.log(
         "\n⏰ Scheduler iniciado."
     );
@@ -1850,38 +2149,43 @@ function iniciarScheduler(
         config.horario_envio
     );
 
-    setInterval(
+    let verificando = false;
 
-        () => {
+    setInterval(
+        async () => {
+            if (verificando) {
+                return;
+            }
+
+            verificando = true;
 
             try {
-
-                verificarHorarioEnvio(
+                await verificarHorarioEnvio(
                     client
                 );
 
             } catch (erro) {
-
                 console.error(
                     "❌ Erro no scheduler:",
                     erro
                 );
-            }
 
+            } finally {
+                verificando = false;
+            }
         },
 
-        1000
+        5000
     );
 }
 
 // =====================================================
-// AGUARDA WHATSAPP PRONTO
+// AGUARDA WHATSAPP
 // =====================================================
 
 async function esperarWhatsAppPronto(
     client
 ) {
-
     console.log(
         "Aguardando WhatsApp carregar os chats..."
     );
@@ -1891,9 +2195,7 @@ async function esperarWhatsAppPronto(
         tentativa <= 30;
         tentativa++
     ) {
-
         try {
-
             const estado =
                 await client.getConnectionState();
 
@@ -1901,12 +2203,8 @@ async function esperarWhatsAppPronto(
                 `Tentativa ${tentativa}/30 - Estado: ${estado}`
             );
 
-            if (
-                estado === "CONNECTED"
-            ) {
-
+            if (estado === "CONNECTED") {
                 try {
-
                     const chats =
                         await client.listChats();
 
@@ -1914,7 +2212,6 @@ async function esperarWhatsAppPronto(
                         chats &&
                         chats.length > 0
                     ) {
-
                         console.log(
                             `WhatsApp pronto! ${chats.length} chats carregados.`
                         );
@@ -1923,7 +2220,6 @@ async function esperarWhatsAppPronto(
                     }
 
                 } catch (erro) {
-
                     console.log(
                         "Chats ainda não disponíveis..."
                     );
@@ -1931,7 +2227,6 @@ async function esperarWhatsAppPronto(
             }
 
         } catch (erro) {
-
             console.log(
                 "Aguardando WhatsApp..."
             );
@@ -1954,7 +2249,6 @@ async function esperarWhatsAppPronto(
 async function start(
     client
 ) {
-
     console.log(
         "\n================================="
     );
@@ -1971,25 +2265,25 @@ async function start(
         "WhatsApp conectado!"
     );
 
-    // -------------------------------------------------
-    // Configuração inicial
-    // -------------------------------------------------
+    // =============================================
+    // CONFIG
+    // =============================================
 
     carregarConfig();
 
     monitorarArquivoConfig();
 
-    // -------------------------------------------------
-    // Reações
-    // -------------------------------------------------
+    // =============================================
+    // LISTENER REAÇÕES
+    // =============================================
 
     configurarMonitoramentoDeReacoes(
         client
     );
 
-    // -------------------------------------------------
-    // Aguarda WhatsApp
-    // -------------------------------------------------
+    // =============================================
+    // AGUARDA WHATSAPP
+    // =============================================
 
     await esperarWhatsAppPronto(
         client
@@ -1999,9 +2293,9 @@ async function start(
         "WhatsApp sincronizado!"
     );
 
-    // -------------------------------------------------
-    // Lista grupos configurados
-    // -------------------------------------------------
+    // =============================================
+    // GRUPOS
+    // =============================================
 
     console.log(
         "\n================================="
@@ -2019,7 +2313,6 @@ async function start(
         const grupo
         of config.grupos
     ) {
-
         console.log(
             `• ${grupo}`
         );
@@ -2029,9 +2322,28 @@ async function start(
         "=================================\n"
     );
 
-    // -------------------------------------------------
-    // Scheduler
-    // -------------------------------------------------
+    // =============================================
+    // RECUPERA ESTADO
+    // =============================================
+
+    /*
+     * ESSA É A PARTE MAIS IMPORTANTE PARA O RESTART.
+     *
+     * Antes de iniciar o scheduler:
+     *
+     * 1. descobre o ciclo atual;
+     * 2. procura messageId no Mongo;
+     * 3. recupera monitoramento;
+     * 4. se não houver mensagem, envia imediatamente.
+     */
+
+    await recuperarOuGarantirChecagens(
+        client
+    );
+
+    // =============================================
+    // SCHEDULER
+    // =============================================
 
     iniciarScheduler(
         client
@@ -2039,22 +2351,12 @@ async function start(
 }
 
 // =====================================================
-// INICIA BOT
+// INICIALIZAÇÃO
 // =====================================================
 
 async function iniciar() {
-
     try {
-
-        // -------------------------------------------------
-        // Config
-        // -------------------------------------------------
-
         carregarConfig();
-
-        // -------------------------------------------------
-        // Mongo
-        // -------------------------------------------------
 
         await conectarMongo();
 
@@ -2062,13 +2364,8 @@ async function iniciar() {
             "\nIniciando WhatsApp..."
         );
 
-        // -------------------------------------------------
-        // WhatsApp
-        // -------------------------------------------------
-
         wppconnect
             .create({
-
                 session:
                     "daily-bot",
 
@@ -2077,23 +2374,18 @@ async function iniciar() {
                         base64Qr,
                         asciiQR
                     ) => {
-
                         console.log(
                             asciiQR
                         );
                     },
 
                 statusFind:
-                    (
-                        status
-                    ) => {
-
+                    status => {
                         console.log(
                             "Status:",
                             status
                         );
                     }
-
             })
 
             .then(
@@ -2102,7 +2394,6 @@ async function iniciar() {
 
             .catch(
                 erro => {
-
                     console.error(
                         "❌ Erro no WhatsApp:",
                         erro
@@ -2111,7 +2402,6 @@ async function iniciar() {
             );
 
     } catch (erro) {
-
         console.error(
             "\n❌ Erro ao iniciar:",
             erro
@@ -2124,20 +2414,39 @@ async function iniciar() {
 }
 
 // =====================================================
-// SLEEP
+// ENCERRAMENTO
 // =====================================================
 
-function esperar(ms) {
-
-    return new Promise(
-
-        resolve =>
-            setTimeout(
-                resolve,
-                ms
-            )
+async function encerrar(
+    sinal
+) {
+    console.log(
+        `\n🛑 Recebido ${sinal}. Encerrando...`
     );
+
+    try {
+        if (mongoClient) {
+            await mongoClient.close();
+        }
+    } catch (erro) {
+        console.error(
+            "Erro fechando MongoDB:",
+            erro.message
+        );
+    }
+
+    process.exit(0);
 }
+
+process.on(
+    "SIGINT",
+    () => encerrar("SIGINT")
+);
+
+process.on(
+    "SIGTERM",
+    () => encerrar("SIGTERM")
+);
 
 // =====================================================
 // START

@@ -1,0 +1,1508 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>99 Óticas - Mapa de Lojas</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ5TSzOgHUE0xfyef3TdcOoFqak51KYeDzBjzqjlnK1_D2bqRvMXMe9oqY&s=10">
+
+  <style>
+    :root {
+      --azul: #120c42;
+      --azul-claro: #1c5f9e;
+      --amarelo: #facc08;
+      --bg: #f6f4ee;
+      --card: #ffffff;
+      --linha: #e4e0d4;
+      --texto: #1d1a2e;
+      --texto-suave: #635f78;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--texto);
+      font-family: 'Inter', -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, .brand { font-family: 'Space Grotesk', 'Inter', sans-serif; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      min-height: 100vh;
+    }
+
+    .map-panel {
+      position: relative;
+      background: #e8e4d8;
+      overflow: hidden;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #dde0e0;
+    }
+    .map-header {
+      position: absolute;
+      top: 20px; left: 24px;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(6px);
+      padding: 6px 16px 6px 10px;
+      border-radius: 40px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    .map-header img {
+      height: 40px;
+      width: auto;
+      border-radius: 50%;
+    }
+    .map-header .brand {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--azul);
+      margin: 0;
+      line-height: 1.2;
+    }
+    .map-header .sub {
+      font-size: 11px;
+      color: var(--texto-suave);
+      margin: 0;
+    }
+
+    .sidebar {
+      background: var(--card);
+      border-left: 1px solid var(--linha);
+      padding: 24px 20px 40px;
+      overflow-y: auto;
+      max-height: 100vh;
+    }
+    .sidebar h1 {
+      font-size: 19px;
+      margin: 0 0 2px;
+      color: var(--azul);
+    }
+    .sidebar .sub {
+      color: var(--texto-suave);
+      font-size: 13px;
+      margin: 0 0 18px;
+    }
+
+    .legenda {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: #fbf6e3;
+      border: 1px solid #f1e2a3;
+      padding: 10px 14px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+    .legenda-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .legenda-item .bolinha {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1.5px solid #7a5e00;
+      flex: none;
+    }
+    .legenda-item .bolinha.azul {
+      background: #1c5f9e;
+      border-color: #0e3d66;
+    }
+    .legenda-item .bolinha.amarela {
+      background: var(--amarelo);
+      border-color: #7a5e00;
+    }
+
+    .stat-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat {
+      flex: 1;
+      background: var(--azul);
+      color: #fff;
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .stat .num {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--amarelo);
+      line-height: 1;
+    }
+    .stat .lbl {
+      font-size: 11px;
+      margin-top: 2px;
+      color: #d9d6f0;
+    }
+
+    .busca-container {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .busca-container select {
+      flex: 1;
+      min-width: 100px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--linha);
+      font-size: 13px;
+      font-family: inherit;
+      background: #fff;
+      color: var(--texto);
+    }
+    .busca-container select:focus {
+      outline: none;
+      border-color: var(--amarelo);
+    }
+    .busca-container select:disabled {
+      background: #f2f0e8;
+      color: var(--texto-suave);
+      cursor: not-allowed;
+    }
+    .busca-vazio {
+      font-size: 12.5px;
+      color: var(--texto-suave);
+      text-align: center;
+      padding: 18px 8px;
+      border: 1px dashed var(--linha);
+      border-radius: 10px;
+      display: none;
+    }
+    .busca-vazio.ativo { display: block; }
+
+
+
+    .popup-editar-link {
+      display: none !important;
+    }
+    body.admin-mode .popup-editar-link {
+      display: inline-block !important;
+    }
+    .popup-status {
+      display: none !important;
+    }
+    body.admin-mode .popup-status {
+      display: inline !important;
+    }
+
+    .admin-toggle-wrap {
+      margin-top: 24px;
+      padding-top: 10px;
+      border-top: 1px solid var(--linha);
+      text-align: center;
+    }
+    .admin-toggle {
+      background: none;
+      border: none;
+      font-family: inherit;
+      font-size: 11px;
+      color: #b9b6a8;
+      cursor: pointer;
+      padding: 4px 6px;
+      transition: color .2s;
+    }
+    .admin-toggle:hover { color: var(--texto-suave); }
+
+    .add-box {
+      display: none;
+    }
+    body.admin-mode .add-box {
+      display: block;
+    }
+
+    .add-box {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px solid var(--linha);
+    }
+    .add-box h3 {
+      font-size: 14.5px;
+      margin: 0 0 4px;
+      color: var(--azul);
+    }
+    .add-box p.hint {
+      font-size: 12px;
+      color: var(--texto-suave);
+      margin: 0 0 10px;
+    }
+    .field { margin-bottom: 8px; }
+    .field label {
+      display: block;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--texto-suave);
+      margin-bottom: 3px;
+    }
+    .field input, .field select {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--linha);
+      font-size: 13px;
+      font-family: inherit;
+      background: #fff;
+    }
+    .field input:focus, .field select:focus { outline: none; border-color: var(--amarelo); }
+
+    .btn-add {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 10px;
+      background: var(--amarelo);
+      color: var(--azul);
+      font-weight: 700;
+      font-size: 13.5px;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    .btn-add:hover { background: #e6b800; }
+    .btn-add:disabled { opacity: 0.6; cursor: default; }
+
+    .status-msg {
+      font-size: 12.5px;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+    .status-msg.err { color: #b23; }
+    .status-msg.ok { color: #0a7a3d; }
+
+    /* MODAL */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 16px;
+      max-width: 480px;
+      width: 90%;
+      padding: 28px 24px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal h2 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      color: var(--azul);
+    }
+    .modal .field-row {
+      display: flex;
+      gap: 10px;
+    }
+    .modal .field-row .field { flex: 1; }
+    .modal .acoes-modal {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      justify-content: flex-end;
+    }
+    .modal .acoes-modal button {
+      padding: 8px 20px;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .modal .acoes-modal .btn-salvar {
+      background: var(--amarelo);
+      color: var(--azul);
+    }
+    .modal .acoes-modal .btn-salvar:hover { background: #e6b800; }
+    .modal .acoes-modal .btn-remover {
+      background: #fee;
+      color: #b23;
+    }
+    .modal .acoes-modal .btn-remover:hover { background: #fdd; }
+    .modal .acoes-modal .btn-cancelar {
+      background: #eee;
+      color: var(--texto);
+    }
+    .modal .acoes-modal .btn-cancelar:hover { background: #ddd; }
+    .modal .campo-info {
+      font-size: 12px;
+      color: var(--texto-suave);
+      background: #f5f5f5;
+      padding: 4px 8px;
+      border-radius: 6px;
+      margin-top: 2px;
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: var(--linha); border-radius: 6px; }
+
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      .map-panel { height: 55vh; }
+      .sidebar { max-height: none; }
+      .modal { max-width: 95%; padding: 20px; }
+    }
+
+    .custom-marker {
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      margin-top: -8px;
+      margin-left: -8px;
+      box-shadow: 0 0 0 2px rgba(0,0,0,0.15);
+    }
+    .custom-marker.aberta {
+      background: var(--amarelo);
+      border: 2px solid #7a5e00;
+    }
+    .custom-marker.andamento {
+      background: var(--azul-claro);
+      border: 2px solid #0e3d66;
+    }
+    .estado-tooltip {
+      background: var(--azul);
+      color: #fff;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .popup-editar-link {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--azul-claro);
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .popup-editar-link:hover { color: var(--azul); }
+  
+    /* === NOVOS ESTILOS: Agrupamento por Estado → Cidade → Loja === */
+    .estado-wrapper {
+      margin-bottom: 4px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--linha);
+      background: #faf9f5;
+    }
+    .estado-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--azul);
+      color: #fff;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+      transition: background .2s;
+    }
+    .estado-header:hover { background: #1a1055; }
+    .estado-header .estado-seta {
+      transition: transform .25s ease;
+      font-size: 11px;
+      opacity: .8;
+    }
+    .estado-header.aberto .estado-seta { transform: rotate(90deg); }
+    .estado-header .estado-badge {
+      background: var(--amarelo);
+      color: var(--azul);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 10px;
+      margin-left: 8px;
+    }
+
+    .estado-conteudo {
+      display: none;
+      padding: 4px 8px 8px;
+    }
+    .estado-conteudo.aberto { display: block; }
+
+    .cidade-wrapper {
+      border-top: none;
+      padding: 0;
+      margin-top: 6px;
+    }
+    .cidade-wrapper:first-child { margin-top: 4px; }
+    .cidade-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+      font-size: 12.5px;
+      color: var(--azul);
+      padding: 6px 8px;
+      cursor: pointer;
+      border-radius: 8px;
+      background: #f0ede4;
+      border-left: 3px solid var(--amarelo);
+      transition: background .15s;
+    }
+    .cidade-header:hover { background: #e8e4d8; }
+    .cidade-header .cidade-seta {
+      transition: transform .2s ease;
+      font-size: 10px;
+      color: var(--texto-suave);
+      margin-right: 4px;
+    }
+    .cidade-header.aberto .cidade-seta { transform: rotate(90deg); }
+    .cidade-header .count {
+      color: var(--texto-suave);
+      font-weight: 500;
+      font-size: 11px;
+      background: #fff;
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+
+    .unidades-lista {
+      margin-left: 10px;
+      padding-left: 8px;
+      border-left: 2px solid var(--linha);
+      display: none;
+    }
+    .unidades-lista.aberta { display: block; }
+
+    .unidade-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 5px 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .15s;
+      flex-wrap: wrap;
+    }
+    .unidade-item:hover { background: #f5f3ec; }
+    .unidade-item .unidade-nome {
+      font-weight: 500;
+      min-width: 60px;
+      color: var(--texto);
+    }
+    .unidade-item .info-links {
+      display: flex;
+      gap: 4px;
+      font-size: 11px;
+      align-items: center;
+    }
+    .unidade-item .info-links img {
+      width: 16px;
+      height: 16px;
+      vertical-align: middle;
+      border-radius: 3px;
+    }
+    .unidade-item .info-links a {
+      color: var(--azul-claro);
+      text-decoration: none;
+    }
+    .unidade-item .info-links a:hover { text-decoration: underline; }
+    .unidade-item .acoes {
+      display: none;
+      gap: 2px;
+      margin-left: auto;
+    }
+    body.admin-mode .unidade-item .acoes { display: flex; }
+    .unidade-item .acoes button {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 4px;
+      color: var(--texto-suave);
+      transition: color .2s;
+      line-height: 1;
+    }
+    .unidade-item .acoes button:hover { color: var(--azul); }
+    .unidade-item .acoes button.remover:hover { color: #b23; }
+
+    .unidade-status {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: none;
+    }
+    .unidade-status.aberta { background: var(--amarelo); border: 1.5px solid #7a5e00; }
+    .unidade-status.andamento { background: var(--azul-claro); border: 1.5px solid #0e3d66; }
+
+  </style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- MAPA -->
+  <div class="map-panel">
+    <div class="map-header">
+      <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ5TSzOgHUE0xfyef3TdcOoFqak51KYeDzBjzqjlnK1_D2bqRvMXMe9oqY&s=10" alt="99 Óticas">
+	  
+      <div>
+        <p class="brand">99 Óticas</p>
+        <p class="sub">Encontre a 99 mais perto de você</p>
+      </div>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <h1>Encontre sua 99 Óticas</h1>
+    <p class="sub">Selecione seu estado e sua cidade para localizar a loja mais perto de você.</p>
+
+    <div class="legenda">
+      <div class="legenda-item">
+        <div class="bolinha amarela"></div>
+        <span>Aberta</span>
+      </div>
+      <div class="legenda-item">
+        <div class="bolinha azul"></div>
+        <span>Em andamento</span>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat">
+        <div class="num" id="statCidades">0</div>
+        <div class="lbl">cidades</div>
+      </div>
+      <div class="stat">
+        <div class="num" id="statEstados">0</div>
+        <div class="lbl">estados</div>
+      </div>
+    </div>
+
+    <div class="busca-container">
+      <select id="filtroEstado">
+        <option value="">Selecione o estado</option>
+      </select>
+      <select id="filtroCidade" disabled>
+        <option value="">Selecione o estado primeiro</option>
+      </select>
+    </div>
+
+    <div id="listaCidades"></div>
+    <p class="busca-vazio" id="buscaVazio">Selecione um estado e uma cidade para ver as lojas disponíveis.</p>
+
+    <div class="admin-toggle-wrap">
+      <button class="admin-toggle" id="btnToggleAdmin" type="button">⚙ Área do administrador</button>
+    </div>
+
+    <div class="add-box" id="addBox">
+      <h3>Adicionar unidade</h3>
+      <p class="hint">Preencha os dados. Instagram, WhatsApp e endereço são opcionais.</p>
+
+      <div class="field">
+        <label for="novaCidade">Cidade *</label>
+        <input type="text" id="novaCidade" placeholder="Ex: Londrina">
+      </div>
+      <div class="field">
+        <label for="novoEstado">Estado *</label>
+        <select id="novoEstado">
+          <option value="">Selecione...</option>
+          <option>Acre</option><option>Alagoas</option><option>Amapá</option><option>Amazonas</option>
+          <option>Bahia</option><option>Ceará</option><option>Distrito Federal</option>
+          <option>Espírito Santo</option><option>Goiás</option><option>Maranhão</option>
+          <option>Mato Grosso</option><option>Mato Grosso do Sul</option><option>Minas Gerais</option>
+          <option>Pará</option><option>Paraíba</option><option>Paraná</option><option>Pernambuco</option>
+          <option>Piauí</option><option>Rio de Janeiro</option><option>Rio Grande do Norte</option>
+          <option>Rio Grande do Sul</option><option>Rondônia</option><option>Roraima</option>
+          <option>Santa Catarina</option><option>São Paulo</option><option>Sergipe</option>
+          <option>Tocantins</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="novaUnidade">Unidade (ex: Loja 1, Matriz)</label>
+        <input type="text" id="novaUnidade" placeholder="Loja 1">
+      </div>
+      <div class="field">
+        <label for="novoInstagram">Instagram</label>
+        <input type="text" id="novoInstagram" placeholder="@minhaloja">
+      </div>
+      <div class="field">
+        <label for="novoWhatsapp">WhatsApp</label>
+        <input type="text" id="novoWhatsapp" placeholder="(11) 99999-9999">
+      </div>
+      <div class="field">
+        <label for="novoEndereco">Endereço</label>
+        <input type="text" id="novoEndereco" placeholder="Av. Paulista, 1000">
+      </div>
+      <div class="field">
+        <label for="novoStatus">Status *</label>
+        <select id="novoStatus">
+          <option value="aberta">Aberta</option>
+          <option value="andamento">Em andamento</option>
+        </select>
+      </div>
+      <button class="btn-add" id="btnAdd">Adicionar unidade</button>
+      <div class="status-msg" id="statusMsg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL DE EDIÇÃO -->
+<div class="modal-overlay" id="modalEdicao">
+  <div class="modal">
+    <h2>✏️ Editar unidade</h2>
+    <div class="field">
+      <label>Cidade</label>
+      <input type="text" id="editNome" placeholder="Cidade">
+    </div>
+    <div class="field">
+      <label>Estado</label>
+      <select id="editEstado">
+        <option>Acre</option><option>Alagoas</option><option>Amapá</option><option>Amazonas</option>
+        <option>Bahia</option><option>Ceará</option><option>Distrito Federal</option>
+        <option>Espírito Santo</option><option>Goiás</option><option>Maranhão</option>
+        <option>Mato Grosso</option><option>Mato Grosso do Sul</option><option>Minas Gerais</option>
+        <option>Pará</option><option>Paraíba</option><option>Paraná</option><option>Pernambuco</option>
+        <option>Piauí</option><option>Rio de Janeiro</option><option>Rio Grande do Norte</option>
+        <option>Rio Grande do Sul</option><option>Rondônia</option><option>Roraima</option>
+        <option>Santa Catarina</option><option>São Paulo</option><option>Sergipe</option>
+        <option>Tocantins</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Unidade</label>
+      <input type="text" id="editUnidade" placeholder="Loja 1">
+    </div>
+    <div class="field">
+      <label>Instagram</label>
+      <input type="text" id="editInstagram" placeholder="@loja">
+    </div>
+    <div class="field">
+      <label>WhatsApp</label>
+      <input type="text" id="editWhatsapp" placeholder="(11) 99999-9999">
+    </div>
+    <div class="field">
+      <label>Endereço</label>
+      <input type="text" id="editEndereco" placeholder="Av. Paulista, 1000">
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select id="editStatus">
+        <option value="aberta">Aberta</option>
+        <option value="andamento">Em andamento</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Coordenadas (somente leitura)</label>
+      <div class="campo-info" id="editCoordenadas">Lat: -23.55, Lon: -51.46</div>
+    </div>
+
+    <div class="acoes-modal">
+      <button class="btn-remover" id="btnRemoverModal">🗑️ Remover</button>
+      <button class="btn-cancelar" id="btnCancelarModal">Cancelar</button>
+      <button class="btn-salvar" id="btnSalvarModal">💾 Salvar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   DADOS PADRÃO (com campo 'unidade')
+   ========================================================= */
+const LOJAS_PADRAO = [
+  // Paraná
+  { name:"Apucarana", state:"Paraná", lat:-23.55, lon:-51.46, status:"aberta", unidade:"", instagram:"@99oticasapucarana", whatsapp:"", endereco:"" },
+  { name:"Arapongas", state:"Paraná", lat:-23.42, lon:-51.42, status:"aberta", unidade:"", instagram:"@99oticasarapongas", whatsapp:"", endereco:"" },
+  { name:"Assis Chateaubriand", state:"Paraná", lat:-24.40, lon:-53.53, status:"aberta", unidade:"", instagram:"@99oticasassischateaubriand", whatsapp:"", endereco:"" },
+  { name:"Cafelândia", state:"Paraná", lat:-24.63, lon:-53.32, status:"aberta", unidade:"", instagram:"@99oticas.cafelandia", whatsapp:"", endereco:"" },
+  { name:"Cambé", state:"Paraná", lat:-23.28, lon:-51.28, status:"aberta", unidade:"", instagram:"@99oticascambe", whatsapp:"", endereco:"" },
+  { name:"Campo Mourão", state:"Paraná", lat:-24.05, lon:-52.38, status:"aberta", unidade:"", instagram:"@99oticascampomourao", whatsapp:"", endereco:"" },
+  { name:"Capanema", state:"Paraná", lat:-25.68, lon:-53.80, status:"aberta", unidade:"", instagram:"@99oticas.capanema", whatsapp:"", endereco:"" },
+  { name:"Capitão Leônidas Marques", state:"Paraná", lat:-25.38, lon:-53.55, status:"aberta", unidade:"", instagram:"@99oticascapitaoleonidasmarques", whatsapp:"", endereco:"" },
+  // Cascavel com 3 unidades
+  { name:"Cascavel", state:"Paraná", lat:-24.96, lon:-53.46, status:"aberta", unidade:"Matriz", instagram:"@99oticas", whatsapp:"(45) 9999-8888", endereco:"Av. Brasil, 1234" },
+  { name:"Cascavel", state:"Paraná", lat:-24.96, lon:-53.46, status:"aberta", unidade:"Loja 2", instagram:"@99oticascascavel2", whatsapp:"(45) 9999-7777", endereco:"Rua Paraná, 567" },
+  { name:"Cascavel", state:"Paraná", lat:-24.96, lon:-53.46, status:"aberta", unidade:"Loja 3", instagram:"@99oticascascavel3", whatsapp:"(45) 9999-6666", endereco:"Av. México, 890" },
+  // Outras
+  { name:"Castro", state:"Paraná", lat:-24.79, lon:-50.01, status:"aberta", unidade:"", instagram:"@99oticascastro.pr", whatsapp:"", endereco:"" },
+  { name:"Curitiba", state:"Paraná", lat:-25.43, lon:-49.27, status:"aberta", unidade:"", instagram:"@99oticascuritiba", whatsapp:"", endereco:"" },
+  { name:"Dois Vizinhos", state:"Paraná", lat:-25.73, lon:-53.06, status:"aberta", unidade:"", instagram:"@99oticasdoisvizinhos", whatsapp:"", endereco:"" },
+  { name:"Foz do Iguaçu", state:"Paraná", lat:-25.55, lon:-54.59, status:"aberta", unidade:"", instagram:"@99oticasfoz", whatsapp:"", endereco:"" },
+  { name:"Francisco Beltrão", state:"Paraná", lat:-26.08, lon:-53.05, status:"aberta", unidade:"", instagram:"@99oticasfranciscobeltrao", whatsapp:"", endereco:"" },
+  { name:"Goioerê", state:"Paraná", lat:-24.19, lon:-53.03, status:"aberta", unidade:"", instagram:"@99oticasgoioere", whatsapp:"", endereco:"" },
+  { name:"Guaíra", state:"Paraná", lat:-24.08, lon:-54.26, status:"aberta", unidade:"", instagram:"@99oticasguaira.pr", whatsapp:"", endereco:"" },
+  { name:"Guarapuava", state:"Paraná", lat:-25.39, lon:-51.46, status:"aberta", unidade:"", instagram:"@99oticasguarapuava", whatsapp:"", endereco:"" },
+  { name:"Ibiporã", state:"Paraná", lat:-23.27, lon:-51.05, status:"aberta", unidade:"", instagram:"@99oticasibipora", whatsapp:"", endereco:"" },
+  { name:"Imbaú", state:"Paraná", lat:-24.42, lon:-50.76, status:"aberta", unidade:"", instagram:"@99oticasimbau", whatsapp:"", endereco:"" },
+  { name:"Marechal Cândido Rondon", state:"Paraná", lat:-24.56, lon:-54.06, status:"aberta", unidade:"", instagram:"@99oticasmarechal", whatsapp:"", endereco:"" },
+  { name:"Maringá", state:"Paraná", lat:-23.42, lon:-51.94, status:"aberta", unidade:"", instagram:"@99oticasmaringa", whatsapp:"", endereco:"" },
+  { name:"Medianeira", state:"Paraná", lat:-25.30, lon:-54.09, status:"aberta", unidade:"", instagram:"@99oticasmedianeira", whatsapp:"", endereco:"" },
+  { name:"Palmas", state:"Paraná", lat:-26.48, lon:-51.99, status:"aberta", unidade:"", instagram:"@99oticaspalmas", whatsapp:"", endereco:"" },
+  { name:"Palotina", state:"Paraná", lat:-24.28, lon:-53.84, status:"aberta", unidade:"", instagram:"@99oticaspalotinapr", whatsapp:"", endereco:"" },
+  { name:"Paranaguá", state:"Paraná", lat:-25.52, lon:-48.51, status:"aberta", unidade:"", instagram:"@99oticasparanagua", whatsapp:"", endereco:"" },
+  { name:"Paranavaí", state:"Paraná", lat:-23.07, lon:-52.46, status:"aberta", unidade:"", instagram:"@99oticasparanavai", whatsapp:"", endereco:"" },
+  { name:"Pato Branco", state:"Paraná", lat:-26.23, lon:-52.67, status:"aberta", unidade:"", instagram:"@99oticaspatobranco", whatsapp:"", endereco:"" },
+  { name:"Pinhais", state:"Paraná", lat:-25.44, lon:-49.19, status:"aberta", unidade:"", instagram:"@99oticaspinhais", whatsapp:"", endereco:"" },
+  { name:"Ponta Grossa", state:"Paraná", lat:-25.09, lon:-50.16, status:"aberta", unidade:"", instagram:"@99oticaspontagrossa", whatsapp:"", endereco:"" },
+  { name:"Prudentópolis", state:"Paraná", lat:-25.21, lon:-50.98, status:"andamento", unidade:"", instagram:"@99oticas.prudentopolis", whatsapp:"", endereco:"" },
+  { name:"Santa Helena", state:"Paraná", lat:-24.86, lon:-54.33, status:"aberta", unidade:"", instagram:"@99oticassantahelena", whatsapp:"", endereco:"" },
+  { name:"São Miguel do Iguaçu", state:"Paraná", lat:-25.38, lon:-54.24, status:"aberta", unidade:"", instagram:"@99oticassaomiguel", whatsapp:"", endereco:"" },
+  { name:"Sarandi", state:"Paraná", lat:-23.44, lon:-51.87, status:"aberta", unidade:"", instagram:"@99oticassarandi", whatsapp:"", endereco:"" },
+  { name:"Telêmaco Borba", state:"Paraná", lat:-24.32, lon:-50.62, status:"aberta", unidade:"", instagram:"@99oticastelemacoborba", whatsapp:"", endereco:"" },
+  { name:"Toledo", state:"Paraná", lat:-24.71, lon:-53.74, status:"aberta", unidade:"", instagram:"@99oticastoledo", whatsapp:"", endereco:"" },
+  { name:"Ubiratã", state:"Paraná", lat:-24.53, lon:-53.06, status:"aberta", unidade:"", instagram:"@99oticasubirata", whatsapp:"", endereco:"" },
+  { name:"Umuarama", state:"Paraná", lat:-23.77, lon:-53.32, status:"aberta", unidade:"", instagram:"@99oticasumuarama", whatsapp:"", endereco:"" },
+  { name:"União da Vitória", state:"Paraná", lat:-26.23, lon:-51.08, status:"aberta", unidade:"", instagram:"@99oticasuniaodavitoria", whatsapp:"", endereco:"" },
+  // Santa Catarina
+  { name:"Balneário Piçarras", state:"Santa Catarina", lat:-26.76, lon:-48.67, status:"aberta", unidade:"", instagram:"@99oticas.balpicarras", whatsapp:"", endereco:"" },
+  { name:"Barra Velha", state:"Santa Catarina", lat:-26.64, lon:-48.69, status:"aberta", unidade:"", instagram:"@99oticas.barravelha", whatsapp:"", endereco:"" },
+  { name:"Blumenau", state:"Santa Catarina", lat:-26.92, lon:-49.07, status:"aberta", unidade:"", instagram:"@99oticasblumenau", whatsapp:"", endereco:"" },
+  { name:"Brusque", state:"Santa Catarina", lat:-27.10, lon:-48.92, status:"aberta", unidade:"", instagram:"@99oticasbrusque", whatsapp:"", endereco:"" },
+  { name:"Caçador", state:"Santa Catarina", lat:-26.78, lon:-51.02, status:"aberta", unidade:"", instagram:"@99oticascacador", whatsapp:"", endereco:"" },
+  { name:"Chapecó", state:"Santa Catarina", lat:-27.10, lon:-52.61, status:"aberta", unidade:"", instagram:"@99oticaschapeco", whatsapp:"", endereco:"" },
+  { name:"Concórdia", state:"Santa Catarina", lat:-27.23, lon:-52.03, status:"aberta", unidade:"", instagram:"@99oticasconcordia", whatsapp:"", endereco:"" },
+  { name:"Criciúma", state:"Santa Catarina", lat:-28.68, lon:-49.37, status:"aberta", unidade:"", instagram:"@99oticascriciuma", whatsapp:"", endereco:"" },
+  { name:"Florianópolis", state:"Santa Catarina", lat:-27.60, lon:-48.55, status:"aberta", unidade:"", instagram:"@99oticasflorianopolis", whatsapp:"", endereco:"" },
+  { name:"Itajaí", state:"Santa Catarina", lat:-26.91, lon:-48.66, status:"aberta", unidade:"", instagram:"@99oticas.em.itajai", whatsapp:"", endereco:"" },
+  { name:"Itapema", state:"Santa Catarina", lat:-27.09, lon:-48.61, status:"aberta", unidade:"", instagram:"@99oticas.itapema", whatsapp:"", endereco:"" },
+  { name:"Itapoá", state:"Santa Catarina", lat:-26.13, lon:-48.61, status:"aberta", unidade:"", instagram:"@99oticasitapoa", whatsapp:"", endereco:"" },
+  { name:"Jaraguá do Sul", state:"Santa Catarina", lat:-26.49, lon:-49.07, status:"aberta", unidade:"", instagram:"@99oticasjaragua", whatsapp:"", endereco:"" },
+  { name:"Joinville", state:"Santa Catarina", lat:-26.30, lon:-48.85, status:"aberta", unidade:"", instagram:"@99oticasjoinville", whatsapp:"", endereco:"" },
+  { name:"Lages", state:"Santa Catarina", lat:-27.82, lon:-50.33, status:"aberta", unidade:"", instagram:"@99oticaslages", whatsapp:"", endereco:"" },
+  { name:"Mafra", state:"Santa Catarina", lat:-26.11, lon:-49.81, status:"andamento", unidade:"", instagram:"@99oticasmafra", whatsapp:"", endereco:"" },
+  { name:"Navegantes", state:"Santa Catarina", lat:-26.90, lon:-48.65, status:"aberta", unidade:"", instagram:"@99oticasnavegantes", whatsapp:"", endereco:"" },
+  { name:"Palhoça", state:"Santa Catarina", lat:-27.64, lon:-48.67, status:"aberta", unidade:"", instagram:"@99oticaspalhoca", whatsapp:"", endereco:"" },
+  { name:"Penha", state:"Santa Catarina", lat:-26.77, lon:-48.65, status:"andamento", unidade:"", instagram:"@99oticas.penha", whatsapp:"", endereco:"" },
+  { name:"Porto Belo", state:"Santa Catarina", lat:-27.16, lon:-48.55, status:"andamento", unidade:"", instagram:"@99oticas.portobelo", whatsapp:"", endereco:"" },
+  { name:"São Bento do Sul", state:"Santa Catarina", lat:-26.25, lon:-49.38, status:"aberta", unidade:"", instagram:"@99oticassaobentodosul", whatsapp:"", endereco:"" },
+  { name:"São Miguel do Oeste", state:"Santa Catarina", lat:-26.72, lon:-53.52, status:"aberta", unidade:"", instagram:"@99oticassaomigueldooeste", whatsapp:"", endereco:"" },
+  { name:"Tubarão", state:"Santa Catarina", lat:-28.47, lon:-49.01, status:"aberta", unidade:"", instagram:"@99oticastubarao", whatsapp:"", endereco:"" },
+  // Rio Grande do Sul
+  { name:"Caxias do Sul", state:"Rio Grande do Sul", lat:-29.17, lon:-51.18, status:"aberta", unidade:"", instagram:"@99oticascaxiasdosul", whatsapp:"", endereco:"" },
+  { name:"Erechim", state:"Rio Grande do Sul", lat:-27.63, lon:-52.27, status:"aberta", unidade:"", instagram:"@99oticaserechim", whatsapp:"", endereco:"" },
+  { name:"Gravataí", state:"Rio Grande do Sul", lat:-29.94, lon:-50.99, status:"andamento", unidade:"", instagram:"@99oticasgravatai", whatsapp:"", endereco:"" },
+  { name:"Ijuí", state:"Rio Grande do Sul", lat:-28.39, lon:-53.91, status:"andamento", unidade:"", instagram:"@99oticasijui", whatsapp:"", endereco:"" },
+  { name:"Lajeado", state:"Rio Grande do Sul", lat:-29.47, lon:-51.96, status:"aberta", unidade:"", instagram:"@99oticaslajeado", whatsapp:"", endereco:"" },
+  { name:"Marau", state:"Rio Grande do Sul", lat:-28.45, lon:-52.20, status:"aberta", unidade:"", instagram:"@99oticasmarau", whatsapp:"", endereco:"" },
+  { name:"Passo Fundo", state:"Rio Grande do Sul", lat:-28.26, lon:-52.41, status:"aberta", unidade:"", instagram:"@99oticaspassofundo", whatsapp:"", endereco:"" },
+  { name:"Santa Cruz do Sul", state:"Rio Grande do Sul", lat:-29.72, lon:-52.43, status:"aberta", unidade:"", instagram:"@99oticassantacruzdosul", whatsapp:"", endereco:"" },
+  { name:"Santa Maria", state:"Rio Grande do Sul", lat:-29.68, lon:-53.81, status:"aberta", unidade:"", instagram:"@99oticassantamaria", whatsapp:"", endereco:"" },
+  { name:"Vacaria", state:"Rio Grande do Sul", lat:-28.51, lon:-50.93, status:"andamento", unidade:"", instagram:"@99oticasvacaria", whatsapp:"", endereco:"" },
+  // Mato Grosso do Sul
+  { name:"Campo Grande", state:"Mato Grosso do Sul", lat:-20.44, lon:-54.65, status:"aberta", unidade:"", instagram:"@99oticascampogrande", whatsapp:"", endereco:"" },
+  { name:"Dourados", state:"Mato Grosso do Sul", lat:-22.22, lon:-54.81, status:"aberta", unidade:"", instagram:"@99oticasdourados", whatsapp:"", endereco:"" },
+  { name:"Naviraí", state:"Mato Grosso do Sul", lat:-23.06, lon:-54.19, status:"aberta", unidade:"", instagram:"@99oticasnavirai", whatsapp:"", endereco:"" },
+  // Goiás
+  { name:"Jataí", state:"Goiás", lat:-17.88, lon:-51.71, status:"aberta", unidade:"", instagram:"@99oticasjatai", whatsapp:"", endereco:"" },
+  { name:"Rio Verde", state:"Goiás", lat:-17.79, lon:-50.92, status:"aberta", unidade:"", instagram:"@99oticasrioverde", whatsapp:"", endereco:"" },
+  // São Paulo
+  { name:"Assis", state:"São Paulo", lat:-22.66, lon:-50.41, status:"aberta", unidade:"", instagram:"@99oticas.assis.sp", whatsapp:"", endereco:"" },
+  { name:"Campinas", state:"São Paulo", lat:-22.91, lon:-47.06, status:"aberta", unidade:"", instagram:"@99oticascampinas", whatsapp:"", endereco:"" },
+  { name:"Indaiatuba", state:"São Paulo", lat:-23.09, lon:-47.22, status:"aberta", unidade:"", instagram:"@99oticasindaiatuba", whatsapp:"", endereco:"" },
+  { name:"Itu", state:"São Paulo", lat:-23.26, lon:-47.30, status:"aberta", unidade:"", instagram:"@99oticasitu.sp", whatsapp:"", endereco:"" },
+  { name:"Itapevi", state:"São Paulo", lat:-23.55, lon:-46.93, status:"andamento", unidade:"", instagram:"@99oticasitapevi", whatsapp:"", endereco:"" },
+  { name:"Marília", state:"São Paulo", lat:-22.21, lon:-49.95, status:"aberta", unidade:"", instagram:"@99oticasmarilia", whatsapp:"", endereco:"" },
+  { name:"Osasco", state:"São Paulo", lat:-23.53, lon:-46.79, status:"andamento", unidade:"", instagram:"@99oticasosasco", whatsapp:"", endereco:"" },
+  { name:"Ourinhos", state:"São Paulo", lat:-22.98, lon:-49.87, status:"andamento", unidade:"", instagram:"@99oticasourinhos", whatsapp:"", endereco:"" },
+  { name:"Piracicaba", state:"São Paulo", lat:-22.73, lon:-47.65, status:"andamento", unidade:"", instagram:"@99oticaspiracicaba", whatsapp:"", endereco:"" },
+  { name:"Santos", state:"São Paulo", lat:-23.96, lon:-46.33, status:"andamento", unidade:"", instagram:"@99oticassantos", whatsapp:"", endereco:"" },
+  { name:"São Caetano do Sul", state:"São Paulo", lat:-23.62, lon:-46.55, status:"andamento", unidade:"", instagram:"@99oticassaocaetanodosul", whatsapp:"", endereco:"" },
+  { name:"São José do Rio Preto", state:"São Paulo", lat:-20.82, lon:-49.38, status:"andamento", unidade:"", instagram:"@99oticas.saojosedoriopreto", whatsapp:"", endereco:"" },
+  { name:"São José dos Campos", state:"São Paulo", lat:-23.18, lon:-45.88, status:"aberta", unidade:"", instagram:"@99oticassaojosedoscampos", whatsapp:"", endereco:"" },
+  { name:"Sorocaba", state:"São Paulo", lat:-23.50, lon:-47.46, status:"aberta", unidade:"", instagram:"@99oticas.sorocaba", whatsapp:"", endereco:"" },
+  { name:"Suzano", state:"São Paulo", lat:-23.54, lon:-46.31, status:"andamento", unidade:"", instagram:"@99oticassuzano", whatsapp:"", endereco:"" },
+  { name:"Votorantim", state:"São Paulo", lat:-23.55, lon:-47.44, status:"andamento", unidade:"", instagram:"@99oticasvotorantim", whatsapp:"", endereco:"" },
+  // Outros estados
+  { name:"Uberlândia", state:"Minas Gerais", lat:-18.92, lon:-48.28, status:"aberta", unidade:"", instagram:"@99oticasuberlandia", whatsapp:"", endereco:"" },
+  { name:"Belém", state:"Pará", lat:-1.46, lon:-48.50, status:"andamento", unidade:"", instagram:"@99oticasbelempa", whatsapp:"", endereco:"" },
+  { name:"Parauapebas", state:"Pará", lat:-6.07, lon:-49.90, status:"andamento", unidade:"", instagram:"@99oticasparauapebas", whatsapp:"", endereco:"" },
+  { name:"Camaçari", state:"Bahia", lat:-12.70, lon:-38.32, status:"andamento", unidade:"", instagram:"@99oticascamacari", whatsapp:"", endereco:"" },
+  { name:"Goiana", state:"Pernambuco", lat:-7.56, lon:-34.99, status:"andamento", unidade:"", instagram:"@99oticasgoiana", whatsapp:"", endereco:"" },
+  { name:"Maceió", state:"Alagoas", lat:-9.67, lon:-35.74, status:"andamento", unidade:"", instagram:"@99oticasmaceio", whatsapp:"", endereco:"" },
+  { name:"Palmas", state:"Tocantins", lat:-10.18, lon:-48.33, status:"andamento", unidade:"", instagram:"@99oticaspalmasto", whatsapp:"", endereco:"" }
+];
+
+/* =========================================================
+   ARMAZENAMENTO LOCAL
+   ========================================================= */
+let lojas = [];
+
+function carregarLojas() {
+  try {
+    const dados = localStorage.getItem('lojas-99oticas');
+    if (dados) {
+      lojas = JSON.parse(dados);
+      // Garantir que todas tenham campo 'unidade'
+      lojas = lojas.map(l => ({ ...l, unidade: l.unidade || '' }));
+      return;
+    }
+  } catch (e) {}
+  lojas = LOJAS_PADRAO.map(l => ({ ...l, unidade: l.unidade || '' }));
+  salvarLojas();
+}
+
+function salvarLojas() {
+  localStorage.setItem('lojas-99oticas', JSON.stringify(lojas));
+}
+
+/* =========================================================
+   MAPA (Leaflet)
+   ========================================================= */
+const map = L.map('map', {
+  center: [-14.2, -51.9],
+  zoom: 4.5,
+  minZoom: 3.5,
+  maxZoom: 8,
+  zoomControl: false
+});
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 8
+}).addTo(map);
+
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+/* =========================================================
+   ESTADOS (GeoJSON)
+   ========================================================= */
+let estadosLayer = null;
+const estadoCores = {};
+
+function getCorEstado(index, total) {
+  const hue = 215;
+  const sat = 70 + (index / total) * 20;
+  const lig = 30 + (index / total) * 30;
+  return `hsl(${hue}, ${sat}%, ${lig}%)`;
+}
+
+const GEO_URL = 'https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-100-estados.json';
+
+fetch(GEO_URL)
+  .then(res => {
+    if (!res.ok) throw new Error('Falha ao carregar GeoJSON');
+    return res.json();
+  })
+  .then(data => {
+    const estados = data.features.sort((a, b) => a.properties.nome.localeCompare(b.properties.nome));
+    const total = estados.length;
+    estados.forEach((feature, i) => {
+      const nome = feature.properties.nome;
+      estadoCores[nome] = getCorEstado(i, total);
+    });
+
+    estadosLayer = L.geoJSON(data, {
+      style: function (feature) {
+        const nome = feature.properties.nome;
+        return {
+          fillColor: estadoCores[nome] || '#1c1560',
+          fillOpacity: 0.55,
+          color: '#ffffff',
+          weight: 1.2,
+          opacity: 0.8
+        };
+      },
+      onEachFeature: function (feature, layer) {
+        const nome = feature.properties.nome;
+        layer.bindTooltip(nome, { sticky: true, className: 'estado-tooltip' });
+        layer.on('click', function () {
+          map.fitBounds(layer.getBounds());
+        });
+      }
+    }).addTo(map);
+
+    atualizarTudo();
+  })
+  .catch(err => {
+    console.warn('Não foi possível carregar os estados.', err);
+    atualizarTudo();
+  });
+
+/* =========================================================
+   MARCADORES (agrupados por cidade)
+   ========================================================= */
+let markers = [];
+
+function criarIcone(status) {
+  const cls = 'custom-marker ' + status;
+  return L.divIcon({
+    className: cls,
+    iconSize: [16, 16],
+    popupAnchor: [0, -10]
+  });
+}
+
+function renderMarkers(filtroEstado = '', filtroCidade = '') {
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+
+  let lista = lojas;
+  if (filtroEstado) lista = lista.filter(l => l.state === filtroEstado);
+  if (filtroCidade) {
+    const termo = filtroCidade.toLowerCase();
+    lista = lista.filter(l => l.name.toLowerCase().includes(termo));
+  }
+
+  // Agrupar por cidade (name + state + lat + lon aproximado)
+  const grupos = new Map();
+  lista.forEach(loja => {
+    const chave = `${loja.name}|${loja.state}|${loja.lat.toFixed(4)}|${loja.lon.toFixed(4)}`;
+    if (!grupos.has(chave)) {
+      grupos.set(chave, {
+        name: loja.name,
+        state: loja.state,
+        lat: loja.lat,
+        lon: loja.lon,
+        unidades: []
+      });
+    }
+    grupos.get(chave).unidades.push(loja);
+  });
+
+  grupos.forEach(grupo => {
+    const { name, state, lat, lon, unidades } = grupo;
+    // Determinar status predominante (se alguma unidade estiver andamento, marcador fica andamento)
+    const temAndamento = unidades.some(u => u.status === 'andamento');
+    const status = temAndamento ? 'andamento' : 'aberta';
+    const icon = criarIcone(status);
+    const marker = L.marker([lat, lon], { icon }).addTo(map);
+
+    // Conteúdo do popup
+    let popupContent = `<b>${name}</b><br>${state}`;
+    if (document.body.classList.contains('admin-mode')) {
+      popupContent += `<br><span class="popup-status">Status: ${status === 'aberta' ? '✅ Aberta' : '🔄 Em andamento'}</span>`;
+    }
+
+    unidades.forEach((unidade, idx) => {
+      const unidadeNome = unidade.unidade || `Loja ${idx+1}`;
+      popupContent += `<hr><b>${unidadeNome}</b>`;
+      if (unidade.instagram) {
+        let link = unidade.instagram.trim();
+        if (!link.startsWith('http')) link = 'https://instagram.com/' + link.replace('@', '');
+        popupContent += `<br><img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a5/Instagram_icon.png/1280px-Instagram_icon.png?utm_source=pt.wikipedia.org&utm_campaign=index&utm_content=thumbnail" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="IG"> <a href="${link}" target="_blank">${unidade.instagram}</a>`;
+      }
+      if (unidade.whatsapp) {
+        const numero = unidade.whatsapp.replace(/\D/g, '');
+        if (numero.length >= 10) {
+          popupContent += `<br><img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/1280px-WhatsApp.svg.png?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=thumbnail&_=20220228223904" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="WA"> <a href="https://wa.me/55${numero}" target="_blank">${unidade.whatsapp}</a>`;
+        } else {
+          popupContent += `<br><img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/1280px-WhatsApp.svg.png?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=thumbnail&_=20220228223904" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="WA"> ${unidade.whatsapp}`;
+        }
+      }
+      if (unidade.endereco) {
+        popupContent += `<br>📍 ${unidade.endereco}`;
+      }
+      if (document.body.classList.contains('admin-mode')) {
+        popupContent += `<br><span class="popup-editar-link" data-nome="${unidade.name}" data-lat="${unidade.lat}" data-lon="${unidade.lon}" data-unidade="${unidade.unidade || ''}">✏️ Editar</span>`;
+      }
+    });
+
+    marker.bindPopup(popupContent);
+
+    marker.on('popupopen', function () {
+      if (document.body.classList.contains('admin-mode')) {
+        document.querySelectorAll('.popup-editar-link').forEach(link => {
+          link.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const nome = this.dataset.nome;
+            const lat = parseFloat(this.dataset.lat);
+            const lon = parseFloat(this.dataset.lon);
+            const unidade = this.dataset.unidade;
+            abrirModalEdicao(nome, lat, lon, unidade);
+            map.closePopup();
+          });
+        });
+      }
+    });
+
+    markers.push(marker);
+  });
+}
+
+/* =========================================================
+   ESTATÍSTICAS E LISTA DE CIDADES (com unidades)
+   ========================================================= */
+function updateStats() {
+  const cidades = new Set(lojas.map(l => `${l.name}|${l.state}`));
+  document.getElementById('statCidades').textContent = cidades.size;
+  const estados = new Set(lojas.map(l => l.state));
+  document.getElementById('statEstados').textContent = estados.size;
+}
+
+function renderListaCidades(filtroEstado = '', filtroCidade = '') {
+  let lista = lojas;
+  if (filtroEstado) lista = lista.filter(l => l.state === filtroEstado);
+  if (filtroCidade) {
+    const termo = filtroCidade.toLowerCase();
+    lista = lista.filter(l => l.name.toLowerCase().includes(termo));
+  }
+
+  // Agrupar: Estado → Cidade → Unidades
+  const porEstado = {};
+  lista.forEach(loja => {
+    if (!porEstado[loja.state]) porEstado[loja.state] = {};
+    const cidadeKey = loja.name;
+    if (!porEstado[loja.state][cidadeKey]) porEstado[loja.state][cidadeKey] = [];
+    porEstado[loja.state][cidadeKey].push(loja);
+  });
+
+  const container = document.getElementById('listaCidades');
+  container.innerHTML = '';
+
+  // Se não houver resultados
+  if (Object.keys(porEstado).length === 0) {
+    container.innerHTML = '<p style="text-align:center;color:var(--texto-suave);font-size:12.5px;padding:18px 8px;border:1px dashed var(--linha);border-radius:10px;">Nenhuma loja encontrada para os filtros selecionados.</p>';
+    return;
+  }
+
+  Object.keys(porEstado).sort().forEach(state => {
+    const estadoWrapper = document.createElement('div');
+    estadoWrapper.className = 'estado-wrapper';
+
+    const cidades = porEstado[state];
+    const totalCidades = Object.keys(cidades).length;
+    const totalUnidades = Object.values(cidades).reduce((s, u) => s + u.length, 0);
+
+    // Header do estado
+    const estadoHeader = document.createElement('div');
+    estadoHeader.className = 'estado-header';
+    estadoHeader.innerHTML = `<span style="display:flex;align-items:center;gap:6px;"><span class="estado-seta">▶</span>${state}</span><span style="display:flex;align-items:center;gap:6px;"><span class="estado-badge">${totalUnidades}</span></span>`;
+    estadoWrapper.appendChild(estadoHeader);
+
+    const estadoConteudo = document.createElement('div');
+    estadoConteudo.className = 'estado-conteudo';
+
+    Object.keys(cidades).sort().forEach(cidade => {
+      const unidades = cidades[cidade];
+      const cidadeWrapper = document.createElement('div');
+      cidadeWrapper.className = 'cidade-wrapper';
+
+      const cidadeHeader = document.createElement('div');
+      cidadeHeader.className = 'cidade-header';
+      cidadeHeader.innerHTML = `<span style="display:flex;align-items:center;gap:4px;"><span class="cidade-seta">▶</span>${cidade}</span><span class="count">${unidades.length} unidade${unidades.length>1?'s':''}</span>`;
+      cidadeWrapper.appendChild(cidadeHeader);
+
+      const listaUnidades = document.createElement('div');
+      listaUnidades.className = 'unidades-lista';
+
+      unidades.forEach((unidade, idx) => {
+        const div = document.createElement('div');
+        div.className = 'unidade-item';
+
+        // Bolinha de status
+        const statusDot = document.createElement('span');
+        statusDot.className = 'unidade-status ' + unidade.status;
+        div.appendChild(statusDot);
+
+        const nomeSpan = document.createElement('span');
+        nomeSpan.className = 'unidade-nome';
+        nomeSpan.textContent = unidade.unidade || `Loja ${idx+1}`;
+        div.appendChild(nomeSpan);
+
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'info-links';
+        if (unidade.instagram) {
+          const a = document.createElement('a');
+          a.href = unidade.instagram.startsWith('http') ? unidade.instagram : 'https://instagram.com/' + unidade.instagram.replace('@', '');
+          a.target = '_blank';
+          a.innerHTML = '<img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a5/Instagram_icon.png/1280px-Instagram_icon.png?utm_source=pt.wikipedia.org&utm_campaign=index&utm_content=thumbnail" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="IG">';
+          a.title = 'Instagram';
+          infoDiv.appendChild(a);
+        }
+        if (unidade.whatsapp) {
+          const numero = unidade.whatsapp.replace(/\D/g, '');
+          if (numero.length >= 10) {
+            const a = document.createElement('a');
+            a.href = `https://wa.me/55${numero}`;
+            a.target = '_blank';
+            a.innerHTML = '<img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/1280px-WhatsApp.svg.png?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=thumbnail&_=20220228223904" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="WA">';
+            a.title = 'WhatsApp';
+            infoDiv.appendChild(a);
+          } else {
+            const span = document.createElement('span');
+            span.innerHTML = '<img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/1280px-WhatsApp.svg.png?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=thumbnail&_=20220228223904" style="width:16px;height:16px;vertical-align:middle;border-radius:3px;display:inline-block;" alt="WA">';
+            span.title = unidade.whatsapp;
+            infoDiv.appendChild(span);
+          }
+        }
+        if (unidade.endereco) {
+          const span = document.createElement('span');
+          span.textContent = '📍';
+          span.title = unidade.endereco;
+          infoDiv.appendChild(span);
+        }
+        div.appendChild(infoDiv);
+
+        // Ações admin
+        const acoes = document.createElement('div');
+        acoes.className = 'acoes';
+        const btnEditar = document.createElement('button');
+        btnEditar.textContent = '✏️';
+        btnEditar.title = 'Editar';
+        btnEditar.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          abrirModalEdicao(unidade.name, unidade.lat, unidade.lon, unidade.unidade || '');
+        });
+        acoes.appendChild(btnEditar);
+
+        const btnRemover = document.createElement('button');
+        btnRemover.textContent = '✕';
+        btnRemover.className = 'remover';
+        btnRemover.title = 'Remover';
+        btnRemover.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          if (confirm(`Tem certeza que deseja remover a unidade "${unidade.unidade || 'loja'}" de ${unidade.name}?`)) {
+            removerUnidade(unidade.name, unidade.lat, unidade.lon, unidade.unidade || '');
+          }
+        });
+        acoes.appendChild(btnRemover);
+        div.appendChild(acoes);
+
+        // Clique na unidade centraliza no mapa
+        div.addEventListener('click', () => {
+          map.setView([unidade.lat, unidade.lon], 8);
+          markers.forEach(m => {
+            const latlng = m.getLatLng();
+            if (Math.abs(latlng.lat - unidade.lat) < 0.01 && Math.abs(latlng.lng - unidade.lon) < 0.01) {
+              m.openPopup();
+            }
+          });
+        });
+
+        listaUnidades.appendChild(div);
+      });
+
+      cidadeWrapper.appendChild(listaUnidades);
+      estadoConteudo.appendChild(cidadeWrapper);
+
+      // Toggle cidade
+      cidadeHeader.addEventListener('click', () => {
+        const aberta = listaUnidades.classList.toggle('aberta');
+        cidadeHeader.classList.toggle('aberto', aberta);
+        if (aberta) {
+          const lat = unidades[0].lat;
+          const lon = unidades[0].lon;
+          map.setView([lat, lon], 8);
+          markers.forEach(m => {
+            const mlat = m.getLatLng().lat;
+            const mlon = m.getLatLng().lng;
+            if (Math.abs(mlat - lat) < 0.01 && Math.abs(mlon - lon) < 0.01) {
+              m.openPopup();
+            }
+          });
+        }
+      });
+    });
+
+    estadoWrapper.appendChild(estadoConteudo);
+    container.appendChild(estadoWrapper);
+
+    // Toggle estado
+    estadoHeader.addEventListener('click', () => {
+      const aberto = estadoConteudo.classList.toggle('aberto');
+      estadoHeader.classList.toggle('aberto', aberto);
+    });
+  });
+}
+
+function removerUnidade(name, lat, lon, unidade) {
+  const idx = lojas.findIndex(l => l.name === name && l.lat === lat && l.lon === lon && (l.unidade || '') === unidade);
+  if (idx !== -1) {
+    lojas.splice(idx, 1);
+    salvarLojas();
+    aplicarFiltros();
+  }
+}
+
+/* =========================================================
+   MODAL DE EDIÇÃO
+   ========================================================= */
+let editandoUnidade = null; // referência à unidade em edição
+
+function abrirModalEdicao(name, lat, lon, unidade) {
+  const loja = lojas.find(l => l.name === name && l.lat === lat && l.lon === lon && (l.unidade || '') === unidade);
+  if (!loja) return;
+
+  editandoUnidade = loja;
+  document.getElementById('editNome').value = loja.name;
+  document.getElementById('editEstado').value = loja.state;
+  document.getElementById('editUnidade').value = loja.unidade || '';
+  document.getElementById('editInstagram').value = loja.instagram || '';
+  document.getElementById('editWhatsapp').value = loja.whatsapp || '';
+  document.getElementById('editEndereco').value = loja.endereco || '';
+  document.getElementById('editStatus').value = loja.status;
+  document.getElementById('editCoordenadas').textContent = `Lat: ${loja.lat}, Lon: ${loja.lon}`;
+
+  document.getElementById('modalEdicao').classList.add('active');
+}
+
+function fecharModal() {
+  document.getElementById('modalEdicao').classList.remove('active');
+  editandoUnidade = null;
+}
+
+document.getElementById('btnCancelarModal').addEventListener('click', fecharModal);
+document.getElementById('modalEdicao').addEventListener('click', function(e) {
+  if (e.target === this) fecharModal();
+});
+
+document.getElementById('btnSalvarModal').addEventListener('click', function() {
+  if (!editandoUnidade) return;
+
+  const nome = document.getElementById('editNome').value.trim();
+  const estado = document.getElementById('editEstado').value;
+  const unidade = document.getElementById('editUnidade').value.trim();
+  const instagram = document.getElementById('editInstagram').value.trim();
+  const whatsapp = document.getElementById('editWhatsapp').value.trim();
+  const endereco = document.getElementById('editEndereco').value.trim();
+  const status = document.getElementById('editStatus').value;
+
+  if (!nome || !estado) {
+    alert('Cidade e estado são obrigatórios.');
+    return;
+  }
+
+  editandoUnidade.name = nome;
+  editandoUnidade.state = estado;
+  editandoUnidade.unidade = unidade;
+  editandoUnidade.instagram = instagram;
+  editandoUnidade.whatsapp = whatsapp;
+  editandoUnidade.endereco = endereco;
+  editandoUnidade.status = status;
+
+  salvarLojas();
+  fecharModal();
+  aplicarFiltros();
+});
+
+document.getElementById('btnRemoverModal').addEventListener('click', function() {
+  if (!editandoUnidade) return;
+  if (confirm(`Remover permanentemente a unidade "${editandoUnidade.unidade || 'loja'}" de ${editandoUnidade.name}?`)) {
+    const { name, lat, lon, unidade } = editandoUnidade;
+    removerUnidade(name, lat, lon, unidade || '');
+    fecharModal();
+  }
+});
+
+/* =========================================================
+   BUSCA E FILTROS
+   ========================================================= */
+const filtroEstado = document.getElementById('filtroEstado');
+const filtroCidade = document.getElementById('filtroCidade');
+const buscaVazio = document.getElementById('buscaVazio');
+
+function preencherEstados() {
+  const estadoAtual = filtroEstado.value;
+  const estados = [...new Set(lojas.map(l => l.state))].sort();
+  filtroEstado.innerHTML = '<option value="">Selecione o estado</option>';
+  estados.forEach(uf => {
+    const opt = document.createElement('option');
+    opt.value = uf;
+    opt.textContent = uf;
+    filtroEstado.appendChild(opt);
+  });
+  if (estados.includes(estadoAtual)) filtroEstado.value = estadoAtual;
+}
+
+function atualizarSelectCidades(estadoSelecionado) {
+  if (!estadoSelecionado) {
+    filtroCidade.innerHTML = '<option value="">Selecione o estado primeiro</option>';
+    filtroCidade.disabled = true;
+    return;
+  }
+  const cidades = lojas.filter(l => l.state === estadoSelecionado);
+  const nomes = [...new Set(cidades.map(l => l.name))].sort();
+  filtroCidade.innerHTML = '<option value="">Todas as cidades</option>';
+  nomes.forEach(nome => {
+    const opt = document.createElement('option');
+    opt.value = nome;
+    opt.textContent = nome;
+    filtroCidade.appendChild(opt);
+  });
+  filtroCidade.disabled = false;
+}
+
+function aplicarFiltros() {
+  const estado = filtroEstado.value;
+  const cidade = filtroCidade.value.trim();
+
+  renderMarkers(estado, cidade);
+  renderListaCidades(estado, cidade);
+  updateStats();
+
+  const semResultado = estado && cidade && !lojas.some(l => l.state === estado && l.name === cidade);
+  buscaVazio.classList.toggle('ativo', !!semResultado);
+}
+
+filtroEstado.addEventListener('change', function() {
+  atualizarSelectCidades(this.value);
+  aplicarFiltros();
+});
+
+filtroCidade.addEventListener('change', function() {
+  aplicarFiltros();
+  const nomeCidade = this.value;
+  if (nomeCidade) {
+    const loja = lojas.find(l => l.name === nomeCidade && l.state === filtroEstado.value);
+    if (loja) {
+      map.setView([loja.lat, loja.lon], 8);
+      markers.forEach(m => {
+        const latlng = m.getLatLng();
+        if (Math.abs(latlng.lat - loja.lat) < 0.01 && Math.abs(latlng.lng - loja.lon) < 0.01) {
+          m.openPopup();
+        }
+      });
+    }
+  }
+});
+
+/* =========================================================
+   MODO ADMINISTRADOR
+   ========================================================= */
+const btnToggleAdmin = document.getElementById('btnToggleAdmin');
+btnToggleAdmin.addEventListener('click', function() {
+  const ativo = document.body.classList.toggle('admin-mode');
+  btnToggleAdmin.textContent = ativo ? '⚙ Ocultar área do administrador' : '⚙ Área do administrador';
+  aplicarFiltros(); // re-renderiza popups e lista
+});
+
+/* =========================================================
+   ADICIONAR UNIDADE
+   ========================================================= */
+const btnAdd = document.getElementById('btnAdd');
+const statusMsg = document.getElementById('statusMsg');
+
+btnAdd.addEventListener('click', async () => {
+  const name = document.getElementById('novaCidade').value.trim();
+  const state = document.getElementById('novoEstado').value;
+  const unidade = document.getElementById('novaUnidade').value.trim();
+  const instagram = document.getElementById('novoInstagram').value.trim();
+  const whatsapp = document.getElementById('novoWhatsapp').value.trim();
+  const endereco = document.getElementById('novoEndereco').value.trim();
+  const status = document.getElementById('novoStatus').value;
+
+  statusMsg.className = 'status-msg';
+  statusMsg.textContent = '';
+
+  if (!name || !state) {
+    statusMsg.textContent = 'Preencha a cidade e o estado.';
+    statusMsg.className = 'status-msg err';
+    return;
+  }
+
+  // Verificar se a cidade já existe
+  const existente = lojas.find(l => l.name === name && l.state === state);
+  let lat, lon;
+
+  if (existente) {
+    // Usa as coordenadas da cidade existente
+    lat = existente.lat;
+    lon = existente.lon;
+  } else {
+    // Busca via Nominatim
+    btnAdd.disabled = true;
+    btnAdd.textContent = 'Localizando...';
+    try {
+      const query = encodeURIComponent(`${name}, ${state}, Brasil`);
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=${query}`;
+      const resp = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+      const data = await resp.json();
+      if (!data || data.length === 0) {
+        statusMsg.textContent = 'Cidade não encontrada. Verifique a grafia.';
+        statusMsg.className = 'status-msg err';
+        btnAdd.disabled = false;
+        btnAdd.textContent = 'Adicionar unidade';
+        return;
+      }
+      lat = parseFloat(data[0].lat);
+      lon = parseFloat(data[0].lon);
+    } catch (err) {
+      statusMsg.textContent = 'Erro ao buscar localização. Tente novamente.';
+      statusMsg.className = 'status-msg err';
+      btnAdd.disabled = false;
+      btnAdd.textContent = 'Adicionar unidade';
+      return;
+    }
+    btnAdd.disabled = false;
+    btnAdd.textContent = 'Adicionar unidade';
+  }
+
+  // Verifica duplicata de unidade na mesma cidade
+  const duplicada = lojas.some(l => l.name === name && l.state === state && (l.unidade || '') === unidade);
+  if (duplicada) {
+    statusMsg.textContent = `Já existe uma unidade com o nome "${unidade || 'sem nome'}" nesta cidade.`;
+    statusMsg.className = 'status-msg err';
+    return;
+  }
+
+  const nova = { name, state, lat, lon, unidade, instagram, whatsapp, endereco, status };
+  lojas.push(nova);
+  salvarLojas();
+
+  preencherEstados();
+  atualizarSelectCidades(filtroEstado.value);
+
+  statusMsg.textContent = `Unidade "${unidade || 'nova'}" adicionada em ${name}!`;
+  statusMsg.className = 'status-msg ok';
+  document.getElementById('novaCidade').value = '';
+  document.getElementById('novoEstado').value = '';
+  document.getElementById('novaUnidade').value = '';
+  document.getElementById('novoInstagram').value = '';
+  document.getElementById('novoWhatsapp').value = '';
+  document.getElementById('novoEndereco').value = '';
+  document.getElementById('novoStatus').value = 'aberta';
+
+  aplicarFiltros();
+  map.setView([lat, lon], 8);
+  markers.forEach(m => {
+    const latlng = m.getLatLng();
+    if (Math.abs(latlng.lat - lat) < 0.01 && Math.abs(latlng.lng - lon) < 0.01) {
+      m.openPopup();
+    }
+  });
+});
+
+document.getElementById('novaCidade').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') btnAdd.click();
+});
+
+/* =========================================================
+   INICIALIZAÇÃO
+   ========================================================= */
+function atualizarTudo() {
+  carregarLojas();
+  preencherEstados();
+  atualizarSelectCidades('');
+  aplicarFiltros();
+}
+
+document.addEventListener('DOMContentLoaded', atualizarTudo);
+window.addEventListener('resize', () => map.invalidateSize());
+</script>
+
+</body>
+</html>
