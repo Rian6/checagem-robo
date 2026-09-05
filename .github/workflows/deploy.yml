@@ -1,0 +1,89 @@
+name: Deploy WhatsApp Bot
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+concurrency:
+  group: checagem-robo-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mostrar ambiente
+        run: |
+          node --version
+          npm --version
+          whoami
+          hostname
+          pwd
+
+      - name: Instalar dependências para validação
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Validar sintaxe do bot
+        run: |
+          node --check bot.js
+
+      - name: Copiar projeto para produção
+        run: |
+          rsync -av \
+            --delete \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude="node_modules" \
+            --exclude="tokens" \
+            --exclude="config.json" \
+            --exclude=".env" \
+            ./ /home/rian/checagem-robo/
+
+      - name: Instalar dependências em produção
+        working-directory: /home/rian/checagem-robo
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Validar bot em produção
+        working-directory: /home/rian/checagem-robo
+        run: |
+          node --check bot.js
+
+      - name: Reiniciar robô
+        run: |
+          sudo -n systemctl restart checagem-robo.service
+
+      - name: Verificar serviço
+        run: |
+          sleep 8
+
+          if systemctl is-active --quiet checagem-robo.service; then
+            echo "Robô iniciado com sucesso"
+          else
+            echo "Robô não está ativo"
+            systemctl status checagem-robo.service --no-pager
+            exit 1
+          fi
+
+      - name: Mostrar logs recentes
+        run: |
+          journalctl \
+            -u checagem-robo.service \
+            -n 40 \
+            --no-pager
