@@ -1122,6 +1122,7 @@ function montarMensagemResumoAnomalias(
     ) {
         return (
             `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n\n` +
+            `Ánalise por inteligencia artificial, foi finalizada com sucesso` +
             `👥 Participantes analisados: *${totalUsuarios}*\n\n` +
             `✅ Nenhuma anomalia encontrada hoje.`
         );
@@ -1129,6 +1130,7 @@ function montarMensagemResumoAnomalias(
 
     let mensagem =
         `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n\n` +
+        `Ánalise por inteligencia artificial, foi finalizada com sucesso` +
         `👥 Participantes analisados: *${totalUsuarios}*\n` +
         `⚠️ Anomalias ajustadas: *${anomalias.length}*\n\n`;
 

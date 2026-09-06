@@ -3,3 +3,4 @@ sessao_whatsapp/
 tokens/
 *.log
 .env
+.venv
