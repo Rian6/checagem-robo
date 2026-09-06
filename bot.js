@@ -1121,16 +1121,20 @@ function montarMensagemResumoAnomalias(
         0
     ) {
         return (
-            `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n` +
-            `Ánalise por inteligencia artificial, foi finalizada com sucesso\n\n` +
-            `👥 Participantes analisados: *${totalUsuarios}*\n\n` +
-            `✅ Nenhuma anomalia encontrada hoje.`
+            `🤖 *ANÁLISE INTELIGENTE CONCLUÍDA*\n\n` +
+            `A análise automática do ciclo anterior foi finalizada com sucesso.\n` +
+            `O histórico dos participantes foi avaliado em busca de padrões e possíveis anomalias.\n\n` +
+            `👥 Participantes analisados: *${totalUsuarios}*\n` +
+            `🔎 Anomalias detectadas: *0*\n\n` +
+            `✅ *Nenhuma anomalia foi identificada nesta análise.*\n` +
+            `Os resultados registrados permanecem inalterados.`
         );
     }
 
     let mensagem =
-        `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n` +
-        `Ánalise por inteligencia artificial, foi finalizada com sucesso\n\n` +
+        `🤖 *ANÁLISE INTELIGENTE CONCLUÍDA*\n\n` +
+        `A análise automática do ciclo anterior foi finalizada com sucesso.\n` +
+        `O histórico dos participantes foi avaliado em busca de padrões e possíveis anomalias.\n\n` +
         `👥 Participantes analisados: *${totalUsuarios}*\n` +
         `⚠️ Anomalias ajustadas: *${anomalias.length}*\n\n`;
 
