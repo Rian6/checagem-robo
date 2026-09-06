@@ -2,6 +2,7 @@ const wppconnect = require("@wppconnect-team/wppconnect");
 const fs = require("fs");
 const path = require("path");
 const { MongoClient } = require("mongodb");
+const amqp = require("amqplib");
 
 // =====================================================
 // CONFIGURAÇÃO
@@ -13,6 +14,22 @@ const MONGO_URI = "mongodb://127.0.0.1:27017";
 const MONGO_DATABASE = "whatsapp_bot";
 const MONGO_COLLECTION = "reacoes";
 const MONGO_ENVIOS_COLLECTION = "envios";
+const MONGO_ANOMALY_NOTIFICATIONS_COLLECTION =
+    "anomaly_notifications";
+
+// =====================================================
+// RABBITMQ / SERVIÇO DE ANOMALIAS
+// =====================================================
+
+const RABBITMQ_URL =
+    process.env.RABBITMQ_URL ||
+    "amqp://127.0.0.1:5672";
+
+const FILA_ANALISE =
+    "checagem.anomaly.run";
+
+const FILA_RESULTADO =
+    "checagem.anomaly.result";
 
 const dias = [
     "domingo.jpg",
@@ -24,7 +41,8 @@ const dias = [
     "sabado.jpg"
 ];
 
-const DURACAO_MONITORAMENTO = 24 * 60 * 60 * 1000;
+const DURACAO_MONITORAMENTO =
+    24 * 60 * 60 * 1000;
 
 // =====================================================
 // CONFIG DINÂMICA
@@ -52,13 +70,35 @@ let mongoClient;
 let db;
 let reacoesCollection;
 let enviosCollection;
+let anomalyNotificationsCollection;
+
+// =====================================================
+// RABBITMQ
+// =====================================================
+
+let rabbitConnection = null;
+let rabbitChannel = null;
+let rabbitConectando = false;
+let rabbitConsumerAtivo = false;
+
+const analisesPendentes =
+    new Map();
+
+const analisesAgendadas =
+    new Set();
 
 // =====================================================
 // UTILIDADES
 // =====================================================
 
 function esperar(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(
+        resolve =>
+            setTimeout(
+                resolve,
+                ms
+            )
+    );
 }
 
 function normalizarNomeGrupo(nome) {
@@ -67,32 +107,71 @@ function normalizarNomeGrupo(nome) {
         .toLowerCase();
 }
 
-function obterNomeImagemAtual(data = new Date()) {
-    return dias[data.getDay()];
+function obterNomeImagemAtual(
+    data = new Date()
+) {
+    return dias[
+        data.getDay()
+    ];
 }
 
 function dataAtual() {
-    return new Date().toLocaleDateString("pt-BR");
+    return new Date()
+        .toLocaleDateString(
+            "pt-BR"
+        );
 }
 
-function chaveDataLocal(data) {
-    const ano = data.getFullYear();
-    const mes = String(data.getMonth() + 1).padStart(2, "0");
-    const dia = String(data.getDate()).padStart(2, "0");
+function chaveDataLocal(
+    data
+) {
+    const ano =
+        data.getFullYear();
+
+    const mes =
+        String(
+            data.getMonth() + 1
+        ).padStart(
+            2,
+            "0"
+        );
+
+    const dia =
+        String(
+            data.getDate()
+        ).padStart(
+            2,
+            "0"
+        );
 
     return `${ano}-${mes}-${dia}`;
 }
 
-function horarioEmData(dataBase, horario = config.horario_envio) {
-    const [hora, minuto] = String(horario)
-        .split(":")
-        .map(Number);
+function horarioEmData(
+    dataBase,
+    horario = config.horario_envio
+) {
+    const [hora, minuto] =
+        String(
+            horario
+        )
+            .split(":")
+            .map(Number);
 
-    const data = new Date(dataBase);
+    const data =
+        new Date(
+            dataBase
+        );
 
     data.setHours(
-        Number.isFinite(hora) ? hora : 8,
-        Number.isFinite(minuto) ? minuto : 0,
+        Number.isFinite(hora)
+            ? hora
+            : 8,
+
+        Number.isFinite(minuto)
+            ? minuto
+            : 0,
+
         0,
         0
     );
@@ -104,50 +183,55 @@ function horarioEmData(dataBase, horario = config.horario_envio) {
 // CICLO DA CHECAGEM
 // =====================================================
 
-/*
- * Exemplo horário = 08:00
- *
- * 05/09 15:00
- * ciclo = 05/09 08:00 até 06/09 08:00
- *
- * 06/09 05:00
- * ainda pertence ao ciclo iniciado em 05/09 08:00
- *
- * Isso permite reiniciar o bot antes do próximo horário
- * e recuperar a mensagem anterior.
- */
-
-function obterCicloAtivo(agora = new Date()) {
-    const horarioHoje = horarioEmData(
-        agora,
-        config.horario_envio
-    );
+function obterCicloAtivo(
+    agora = new Date()
+) {
+    const horarioHoje =
+        horarioEmData(
+            agora,
+            config.horario_envio
+        );
 
     let inicio;
 
-    if (agora >= horarioHoje) {
-        inicio = horarioHoje;
+    if (
+        agora >= horarioHoje
+    ) {
+        inicio =
+            horarioHoje;
+
     } else {
-        const ontem = new Date(agora);
+        const ontem =
+            new Date(
+                agora
+            );
 
         ontem.setDate(
             ontem.getDate() - 1
         );
 
-        inicio = horarioEmData(
-            ontem,
-            config.horario_envio
-        );
+        inicio =
+            horarioEmData(
+                ontem,
+                config.horario_envio
+            );
     }
 
-    const fim = new Date(inicio);
+    const fim =
+        new Date(
+            inicio
+        );
 
     fim.setDate(
         fim.getDate() + 1
     );
 
     return {
-        ciclo: chaveDataLocal(inicio),
+        ciclo:
+            chaveDataLocal(
+                inicio
+            ),
+
         inicio,
         fim
     };
@@ -159,7 +243,11 @@ function obterCicloAtivo(agora = new Date()) {
 
 function carregarConfig() {
     try {
-        if (!fs.existsSync(CONFIG_PATH)) {
+        if (
+            !fs.existsSync(
+                CONFIG_PATH
+            )
+        ) {
             console.error(
                 `❌ Arquivo config.json não encontrado: ${CONFIG_PATH}`
             );
@@ -167,31 +255,49 @@ function carregarConfig() {
             return;
         }
 
-        const conteudo = fs.readFileSync(
-            CONFIG_PATH,
-            "utf8"
-        );
+        const conteudo =
+            fs.readFileSync(
+                CONFIG_PATH,
+                "utf8"
+            );
 
-        const novoConfig = JSON.parse(conteudo);
+        const novoConfig =
+            JSON.parse(
+                conteudo
+            );
 
         let grupos = [];
 
-        if (Array.isArray(novoConfig.grupos)) {
-            grupos = novoConfig.grupos;
-        } else if (typeof novoConfig.grupo === "string") {
-            grupos = [novoConfig.grupo];
+        if (
+            Array.isArray(
+                novoConfig.grupos
+            )
+        ) {
+            grupos =
+                novoConfig.grupos;
+
+        } else if (
+            typeof novoConfig.grupo ===
+            "string"
+        ) {
+            grupos = [
+                novoConfig.grupo
+            ];
         }
 
-        grupos = grupos
-            .filter(
-                grupo =>
-                    typeof grupo === "string" &&
-                    grupo.trim() !== ""
-            )
-            .map(
-                grupo =>
-                    grupo.trim()
-            );
+        grupos =
+            grupos
+                .filter(
+                    grupo =>
+                        typeof grupo ===
+                            "string" &&
+                        grupo.trim() !==
+                            ""
+                )
+                .map(
+                    grupo =>
+                        grupo.trim()
+                );
 
         config = {
             ...config,
@@ -199,18 +305,42 @@ function carregarConfig() {
             grupos
         };
 
-        console.log("\n=================================");
-        console.log(" CONFIGURAÇÃO ATUALIZADA");
-        console.log("=================================");
-        console.log("Grupos:", config.grupos);
-        console.log("Horário:", config.horario_envio);
-        console.log("Pasta imagens:", config.pasta_imagens);
+        console.log(
+            "\n================================="
+        );
+
+        console.log(
+            " CONFIGURAÇÃO ATUALIZADA"
+        );
+
+        console.log(
+            "================================="
+        );
+
+        console.log(
+            "Grupos:",
+            config.grupos
+        );
+
+        console.log(
+            "Horário:",
+            config.horario_envio
+        );
+
+        console.log(
+            "Pasta imagens:",
+            config.pasta_imagens
+        );
+
         console.log(
             "Intervalo reação:",
             config.intervalo_reacao,
             "ms"
         );
-        console.log("=================================\n");
+
+        console.log(
+            "=================================\n"
+        );
 
     } catch (erro) {
         console.error(
@@ -227,11 +357,16 @@ function carregarConfig() {
 function monitorarArquivoConfig() {
     fs.watchFile(
         CONFIG_PATH,
+
         {
             interval: 1000
         },
+
         (curr, prev) => {
-            if (curr.mtimeMs !== prev.mtimeMs) {
+            if (
+                curr.mtimeMs !==
+                prev.mtimeMs
+            ) {
                 console.log(
                     "\n🔄 config.json alterado!"
                 );
@@ -250,7 +385,9 @@ function monitorarArquivoConfig() {
 // IDENTIFICA RESULTADO
 // =====================================================
 
-function identificarResultado(emote) {
+function identificarResultado(
+    emote
+) {
     if (!emote) {
         return null;
     }
@@ -261,13 +398,12 @@ function identificarResultado(emote) {
             ""
         );
 
-    // 👍 = DURO
-
-    if (emoteNormalizado === "👍") {
+    if (
+        emoteNormalizado ===
+        "👍"
+    ) {
         return "DURO";
     }
-
-    // CORAÇÕES = MOLE
 
     const coracoes = [
         "❤️",
@@ -284,7 +420,11 @@ function identificarResultado(emote) {
         "🩶"
     ];
 
-    if (coracoes.includes(emoteNormalizado)) {
+    if (
+        coracoes.includes(
+            emoteNormalizado
+        )
+    ) {
         return "MOLE";
     }
 
@@ -292,55 +432,66 @@ function identificarResultado(emote) {
 }
 
 // =====================================================
-// CONECTA MONGODB
+// MONGODB
 // =====================================================
 
 async function conectarMongo() {
-    console.log("\n=================================");
-    console.log(" CONECTANDO AO MONGODB");
-    console.log("=================================");
-
-    mongoClient = new MongoClient(
-        MONGO_URI
+    console.log(
+        "\n================================="
     );
+
+    console.log(
+        " CONECTANDO AO MONGODB"
+    );
+
+    console.log(
+        "================================="
+    );
+
+    mongoClient =
+        new MongoClient(
+            MONGO_URI
+        );
 
     await mongoClient.connect();
 
-    db = mongoClient.db(
-        MONGO_DATABASE
-    );
+    db =
+        mongoClient.db(
+            MONGO_DATABASE
+        );
 
-    reacoesCollection = db.collection(
-        MONGO_COLLECTION
-    );
+    reacoesCollection =
+        db.collection(
+            MONGO_COLLECTION
+        );
 
-    enviosCollection = db.collection(
-        MONGO_ENVIOS_COLLECTION
-    );
+    enviosCollection =
+        db.collection(
+            MONGO_ENVIOS_COLLECTION
+        );
 
-    // =================================================
-    // ÍNDICES REAÇÕES
-    // =================================================
+    anomalyNotificationsCollection =
+        db.collection(
+            MONGO_ANOMALY_NOTIFICATIONS_COLLECTION
+        );
 
     await reacoesCollection.createIndex(
         {
             messageId: 1,
             participantId: 1
         },
+
         {
             unique: true
         }
     );
-
-    // =================================================
-    // ÍNDICES ENVIOS
-    // =================================================
 
     await enviosCollection.createIndex(
         {
             grupoId: 1,
             ciclo: 1
         },
+
         {
             unique: true
         }
@@ -349,6 +500,17 @@ async function conectarMongo() {
     await enviosCollection.createIndex(
         {
             enviadoEm: -1
+        }
+    );
+
+    await anomalyNotificationsCollection.createIndex(
+        {
+            runId: 1,
+            grupoId: 1
+        },
+
+        {
+            unique: true
         }
     );
 
@@ -365,12 +527,16 @@ async function conectarMongo() {
     );
 
     console.log(
+        `Coleção notificações IA: ${MONGO_ANOMALY_NOTIFICATIONS_COLLECTION}`
+    );
+
+    console.log(
         "MongoDB conectado!"
     );
 }
 
 // =====================================================
-// SALVAR REAÇÃO
+// SALVA REAÇÃO
 // =====================================================
 
 async function salvarReacaoMongo({
@@ -385,13 +551,16 @@ async function salvarReacaoMongo({
     resultado,
     timestamp
 }) {
-    if (!reacoesCollection) {
+    if (
+        !reacoesCollection
+    ) {
         throw new Error(
             "MongoDB ainda não está conectado."
         );
     }
 
-    const agora = new Date();
+    const agora =
+        new Date();
 
     const resultadoMongo =
         await reacoesCollection.updateOne(
@@ -399,6 +568,7 @@ async function salvarReacaoMongo({
                 messageId,
                 participantId
             },
+
             {
                 $set: {
                     messageId,
@@ -416,9 +586,11 @@ async function salvarReacaoMongo({
                 },
 
                 $setOnInsert: {
-                    createdAt: agora
+                    createdAt:
+                        agora
                 }
             },
+
             {
                 upsert: true
             }
@@ -445,21 +617,24 @@ async function salvarReacaoMongo({
 
     console.log(
         "Resultado:",
-        resultado || "IGNORADO"
+        resultado ||
+        "IGNORADO"
     );
 
     return resultadoMongo;
 }
 
 // =====================================================
-// DELETAR REAÇÃO
+// DELETA REAÇÃO
 // =====================================================
 
 async function deletarReacaoMongo(
     messageId,
     participantId
 ) {
-    if (!reacoesCollection) {
+    if (
+        !reacoesCollection
+    ) {
         throw new Error(
             "MongoDB ainda não está conectado."
         );
@@ -471,10 +646,14 @@ async function deletarReacaoMongo(
             participantId
         });
 
-    if (resultado.deletedCount > 0) {
+    if (
+        resultado.deletedCount >
+        0
+    ) {
         console.log(
             "🗑️ REAÇÃO DELETADA DO MONGODB"
         );
+
     } else {
         console.log(
             "⚠️ Reação não encontrada no MongoDB."
@@ -485,32 +664,21 @@ async function deletarReacaoMongo(
 }
 
 // =====================================================
-// CONTAR REAÇÕES
+// CONTAGEM / BUSCA
 // =====================================================
 
-async function contarReacoes(messageId) {
-    if (!reacoesCollection) {
-        throw new Error(
-            "MongoDB ainda não está conectado."
-        );
-    }
-
-    return await reacoesCollection.countDocuments({
-        messageId
-    });
+async function contarReacoes(
+    messageId
+) {
+    return await reacoesCollection
+        .countDocuments({
+            messageId
+        });
 }
 
-// =====================================================
-// BUSCAR REAÇÕES
-// =====================================================
-
-async function buscarReacoes(messageId) {
-    if (!reacoesCollection) {
-        throw new Error(
-            "MongoDB ainda não está conectado."
-        );
-    }
-
+async function buscarReacoes(
+    messageId
+) {
     return await reacoesCollection
         .find({
             messageId
@@ -532,17 +700,12 @@ async function salvarEnvioMongo({
     ciclo,
     enviadoEm
 }) {
-    if (!enviosCollection) {
-        throw new Error(
-            "Coleção de envios ainda não disponível."
-        );
-    }
-
     await enviosCollection.updateOne(
         {
             grupoId,
             ciclo
         },
+
         {
             $set: {
                 messageId,
@@ -550,13 +713,16 @@ async function salvarEnvioMongo({
                 grupoNome,
                 ciclo,
                 enviadoEm,
-                atualizadoEm: new Date()
+                atualizadoEm:
+                    new Date()
             },
 
             $setOnInsert: {
-                criadoEm: new Date()
+                criadoEm:
+                    new Date()
             }
         },
+
         {
             upsert: true
         }
@@ -571,10 +737,6 @@ async function buscarEnvioDoCiclo(
     grupoId,
     ciclo
 ) {
-    if (!enviosCollection) {
-        return null;
-    }
-
     return await enviosCollection.findOne({
         grupoId,
         ciclo
@@ -582,15 +744,8 @@ async function buscarEnvioDoCiclo(
 }
 
 // =====================================================
-// MIGRAÇÃO DA VERSÃO ANTIGA
+// RECUPERA ENVIO LEGADO
 // =====================================================
-
-/*
- * Antes dessa versão não existia coleção "envios".
- *
- * Se já houver reação no Mongo para a mensagem antiga,
- * conseguimos recuperar o messageId por ela.
- */
 
 async function buscarEnvioLegadoPelasReacoes({
     grupoId,
@@ -607,19 +762,26 @@ async function buscarEnvioLegadoPelasReacoes({
                 $or: [
                     {
                         createdAt: {
-                            $gte: inicio,
-                            $lt: fim
+                            $gte:
+                                inicio,
+
+                            $lt:
+                                fim
                         }
                     },
 
                     {
                         updatedAt: {
-                            $gte: inicio,
-                            $lt: fim
+                            $gte:
+                                inicio,
+
+                            $lt:
+                                fim
                         }
                     }
                 ]
             },
+
             {
                 sort: {
                     createdAt: -1,
@@ -628,7 +790,9 @@ async function buscarEnvioLegadoPelasReacoes({
             }
         );
 
-    if (!registro?.messageId) {
+    if (
+        !registro?.messageId
+    ) {
         return null;
     }
 
@@ -661,7 +825,7 @@ async function buscarEnvioLegadoPelasReacoes({
 }
 
 // =====================================================
-// CARREGA REAÇÕES DO MONGO PARA MEMÓRIA
+// CARREGA REAÇÕES NO MONITORAMENTO
 // =====================================================
 
 async function carregarReacoesNoMonitoramento(
@@ -672,30 +836,40 @@ async function carregarReacoesNoMonitoramento(
             monitoramento.messageId
         );
 
-    for (const registro of registros) {
+    for (
+        const registro
+        of registros
+    ) {
         monitoramento.reacoes.set(
             registro.participantId,
+
             {
                 fromMe:
-                    registro.fromMe ?? false,
+                    registro.fromMe ??
+                    false,
 
                 participantId:
                     registro.participantId,
 
                 name:
-                    registro.name || "",
+                    registro.name ||
+                    "",
 
                 telefone:
-                    registro.telefone || "",
+                    registro.telefone ||
+                    "",
 
                 emote:
-                    registro.emote || "",
+                    registro.emote ||
+                    "",
 
                 resultado:
-                    registro.resultado || null,
+                    registro.resultado ||
+                    null,
 
                 isDeleted:
-                    registro.isDeleted ?? false,
+                    registro.isDeleted ??
+                    false,
 
                 timestamp:
                     registro.timestamp,
@@ -710,7 +884,7 @@ async function carregarReacoesNoMonitoramento(
 }
 
 // =====================================================
-// NOTIFICAÇÃO DA REAÇÃO
+// NOTIFICAÇÃO DE REAÇÃO
 // =====================================================
 
 async function enviarNotificacaoReacao({
@@ -721,53 +895,56 @@ async function enviarNotificacaoReacao({
     timestamp
 }) {
     try {
-        const configAtual = config;
-
         if (
-            !configAtual.grupos ||
-            !Array.isArray(configAtual.grupos) ||
-            configAtual.grupos.length === 0
+            !Array.isArray(
+                config.grupos
+            ) ||
+            config.grupos.length ===
+                0
         ) {
-            console.log(
-                "⚠️ Nenhum grupo participante configurado."
-            );
-
             return;
         }
 
         const resultado =
-            identificarResultado(emote);
+            identificarResultado(
+                emote
+            );
 
         if (!resultado) {
             return;
         }
 
-        let estado;
+        const estado =
+            resultado === "DURO"
+                ? "de pau duro"
+                : "de pau mole";
 
-        if (resultado === "DURO") {
-            estado = "de pau duro";
-        } else if (resultado === "MOLE") {
-            estado = "de pau mole";
-        } else {
-            return;
-        }
-
-        const data = timestamp
-            ? new Date(timestamp)
-            : new Date();
+        const data =
+            timestamp
+                ? new Date(
+                    timestamp
+                )
+                : new Date();
 
         const hora =
             data.toLocaleTimeString(
                 "pt-BR",
+
                 {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false
+                    hour:
+                        "2-digit",
+
+                    minute:
+                        "2-digit",
+
+                    hour12:
+                        false
                 }
             );
 
         const nomePessoa =
-            name && name.trim()
+            name &&
+            name.trim()
                 ? name.trim()
                 : "Pessoa desconhecida";
 
@@ -777,14 +954,6 @@ async function enviarNotificacaoReacao({
             `reportou que estava ${estado} 🍆\n\n` +
             `✅ Voto registrado com sucesso!`;
 
-        console.log(
-            "\n📢 ENVIANDO RESULTADO PARA TODOS OS GRUPOS:"
-        );
-
-        console.log(
-            mensagemBot
-        );
-
         const gruposWhatsApp =
             await encontrarGrupos(
                 client
@@ -792,7 +961,7 @@ async function enviarNotificacaoReacao({
 
         for (
             const nomeGrupo
-            of configAtual.grupos
+            of config.grupos
         ) {
             const alvo =
                 normalizarNomeGrupo(
@@ -808,10 +977,6 @@ async function enviarNotificacaoReacao({
                 );
 
             if (!grupo) {
-                console.log(
-                    `⚠️ Grupo "${nomeGrupo}" não encontrado para notificação.`
-                );
-
                 continue;
             }
 
@@ -832,7 +997,9 @@ async function enviarNotificacaoReacao({
                 );
             }
 
-            await esperar(500);
+            await esperar(
+                500
+            );
         }
 
     } catch (erro) {
@@ -841,6 +1008,591 @@ async function enviarNotificacaoReacao({
             erro
         );
     }
+}
+
+// =====================================================
+// RABBITMQ / ANÁLISE DE ANOMALIAS
+// =====================================================
+
+function formatarDataISO(
+    data
+) {
+    return chaveDataLocal(
+        data
+    );
+}
+
+function obterDataReferenciaAnalise(
+    inicioCiclo
+) {
+    const data =
+        new Date(
+            inicioCiclo
+        );
+
+    data.setDate(
+        data.getDate() - 1
+    );
+
+    return formatarDataISO(
+        data
+    );
+}
+
+function criarRunIdAnalise(
+    ciclo
+) {
+    return `checagem-anomaly-${ciclo}`;
+}
+
+async function notificacaoAnomaliaJaEnviada(
+    runId,
+    grupoId
+) {
+    const registro =
+        await anomalyNotificationsCollection.findOne({
+            runId,
+            grupoId,
+            status: "SENT"
+        });
+
+    return Boolean(
+        registro
+    );
+}
+
+async function marcarNotificacaoAnomaliaEnviada({
+    runId,
+    grupoId,
+    grupoNome
+}) {
+    await anomalyNotificationsCollection.updateOne(
+        {
+            runId,
+            grupoId
+        },
+
+        {
+            $set: {
+                runId,
+                grupoId,
+                grupoNome,
+
+                status:
+                    "SENT",
+
+                sentAt:
+                    new Date(),
+
+                updatedAt:
+                    new Date()
+            },
+
+            $setOnInsert: {
+                createdAt:
+                    new Date()
+            }
+        },
+
+        {
+            upsert: true
+        }
+    );
+}
+
+function montarMensagemResumoAnomalias(
+    resultado
+) {
+    const anomalias =
+        Array.isArray(
+            resultado.anomalias
+        )
+            ? resultado.anomalias
+            : [];
+
+    const totalUsuarios =
+        Number(
+            resultado.totalUsuarios ||
+            0
+        );
+
+    if (
+        anomalias.length ===
+        0
+    ) {
+        return (
+            `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n\n` +
+            `👥 Participantes analisados: *${totalUsuarios}*\n\n` +
+            `✅ Nenhuma anomalia encontrada hoje.`
+        );
+    }
+
+    let mensagem =
+        `🤖 *ANÁLISE DIÁRIA CONCLUÍDA*\n\n` +
+        `👥 Participantes analisados: *${totalUsuarios}*\n` +
+        `⚠️ Anomalias ajustadas: *${anomalias.length}*\n\n`;
+
+    for (
+        const anomalia
+        of anomalias
+    ) {
+        const score =
+            Math.round(
+                Number(
+                    anomalia.score ||
+                    0
+                ) * 100
+            );
+
+        mensagem +=
+            `👤 *${anomalia.nome || "Desconhecido"}*\n` +
+            `📅 ${anomalia.data || "Data não informada"}\n` +
+            `${anomalia.original || "?"} → ${anomalia.corrigido || "?"}\n` +
+            `Confiança: *${score}%*\n\n`;
+    }
+
+    return mensagem.trim();
+}
+
+async function enviarResumoAnomaliasParaTodos(
+    client,
+    resultado
+) {
+    const runId =
+        resultado.runId;
+
+    if (!runId) {
+        throw new Error(
+            "Resultado de anomalias sem runId."
+        );
+    }
+
+    const mensagem =
+        montarMensagemResumoAnomalias(
+            resultado
+        );
+
+    const gruposWhatsApp =
+        await encontrarGrupos(
+            client
+        );
+
+    const erros = [];
+
+    for (
+        const nomeGrupo
+        of config.grupos
+    ) {
+        const alvo =
+            normalizarNomeGrupo(
+                nomeGrupo
+            );
+
+        const grupo =
+            gruposWhatsApp.find(
+                item =>
+                    normalizarNomeGrupo(
+                        item.name
+                    ) === alvo
+            );
+
+        if (!grupo) {
+            erros.push(
+                `Grupo não encontrado: ${nomeGrupo}`
+            );
+
+            continue;
+        }
+
+        const grupoId =
+            grupo.id._serialized;
+
+        const jaEnviada =
+            await notificacaoAnomaliaJaEnviada(
+                runId,
+                grupoId
+            );
+
+        if (
+            jaEnviada
+        ) {
+            console.log(
+                `♻️ Relatório ${runId} já enviado para ${grupo.name}.`
+            );
+
+            continue;
+        }
+
+        try {
+            await client.sendText(
+                grupoId,
+                mensagem
+            );
+
+            await marcarNotificacaoAnomaliaEnviada({
+                runId,
+                grupoId,
+                grupoNome:
+                    grupo.name
+            });
+
+            console.log(
+                `✅ Relatório de anomalias enviado para: ${grupo.name}`
+            );
+
+        } catch (erro) {
+            console.error(
+                `❌ Erro enviando relatório para ${grupo.name}:`,
+                erro
+            );
+
+            erros.push(
+                `${grupo.name}: ${
+                    erro.message ||
+                    erro
+                }`
+            );
+        }
+
+        await esperar(
+            500
+        );
+    }
+
+    if (
+        erros.length >
+        0
+    ) {
+        throw new Error(
+            erros.join(
+                " | "
+            )
+        );
+    }
+}
+
+async function consumirResultadosAnomalias(
+    client
+) {
+    if (
+        !rabbitChannel ||
+        rabbitConsumerAtivo
+    ) {
+        return;
+    }
+
+    rabbitConsumerAtivo =
+        true;
+
+    await rabbitChannel.consume(
+        FILA_RESULTADO,
+
+        async mensagem => {
+            if (
+                !mensagem
+            ) {
+                return;
+            }
+
+            try {
+                const resultado =
+                    JSON.parse(
+                        mensagem.content.toString(
+                            "utf8"
+                        )
+                    );
+
+                console.log(
+                    "\n================================="
+                );
+
+                console.log(
+                    " 🧠 RESULTADO DA ANÁLISE RECEBIDO"
+                );
+
+                console.log(
+                    "================================="
+                );
+
+                console.log(
+                    resultado
+                );
+
+                await enviarResumoAnomaliasParaTodos(
+                    client,
+                    resultado
+                );
+
+                rabbitChannel.ack(
+                    mensagem
+                );
+
+            } catch (erro) {
+                console.error(
+                    "❌ Erro processando resultado da análise:",
+                    erro
+                );
+
+                try {
+                    rabbitChannel.nack(
+                        mensagem,
+                        false,
+                        true
+                    );
+                } catch (
+                    nackErro
+                ) {
+                    console.error(
+                        nackErro
+                    );
+                }
+            }
+        },
+
+        {
+            noAck: false
+        }
+    );
+}
+
+async function tentarPublicarAnalisesPendentes() {
+    if (
+        !rabbitChannel ||
+        analisesPendentes.size ===
+            0
+    ) {
+        return;
+    }
+
+    for (
+        const [
+            runId,
+            payload
+        ]
+        of analisesPendentes
+    ) {
+        try {
+            rabbitChannel.sendToQueue(
+                FILA_ANALISE,
+
+                Buffer.from(
+                    JSON.stringify(
+                        payload
+                    ),
+
+                    "utf8"
+                ),
+
+                {
+                    persistent: true,
+                    contentType:
+                        "application/json"
+                }
+            );
+
+            analisesPendentes.delete(
+                runId
+            );
+
+            console.log(
+                `🧠 Análise publicada no RabbitMQ: ${runId}`
+            );
+
+        } catch (erro) {
+            console.error(
+                `❌ Erro publicando ${runId}:`,
+                erro.message
+            );
+
+            break;
+        }
+    }
+}
+
+function solicitarAnaliseDoCiclo(
+    cicloInfo
+) {
+    if (
+        !cicloInfo?.ciclo ||
+        !cicloInfo?.inicio
+    ) {
+        return;
+    }
+
+    const runId =
+        criarRunIdAnalise(
+            cicloInfo.ciclo
+        );
+
+    if (
+        analisesAgendadas.has(
+            runId
+        )
+    ) {
+        return;
+    }
+
+    analisesAgendadas.add(
+        runId
+    );
+
+    const payload = {
+        runId,
+
+        dataReferencia:
+            obterDataReferenciaAnalise(
+                cicloInfo.inicio
+            ),
+
+        ciclo:
+            cicloInfo.ciclo,
+
+        solicitadoEm:
+            new Date().toISOString()
+    };
+
+    analisesPendentes.set(
+        runId,
+        payload
+    );
+
+    tentarPublicarAnalisesPendentes()
+        .catch(
+            erro =>
+                console.error(
+                    erro
+                )
+        );
+}
+
+async function conectarRabbitUmaVez(
+    client
+) {
+    if (
+        rabbitChannel ||
+        rabbitConectando
+    ) {
+        return;
+    }
+
+    rabbitConectando =
+        true;
+
+    try {
+        console.log(
+            "🐇 Conectando ao RabbitMQ..."
+        );
+
+        rabbitConnection =
+            await amqp.connect(
+                RABBITMQ_URL
+            );
+
+        rabbitConnection.on(
+            "error",
+            erro => {
+                console.error(
+                    "❌ RabbitMQ:",
+                    erro.message
+                );
+            }
+        );
+
+        rabbitConnection.on(
+            "close",
+            () => {
+                rabbitConnection =
+                    null;
+
+                rabbitChannel =
+                    null;
+
+                rabbitConsumerAtivo =
+                    false;
+            }
+        );
+
+        rabbitChannel =
+            await rabbitConnection.createChannel();
+
+        await rabbitChannel.assertQueue(
+            FILA_ANALISE,
+
+            {
+                durable: true
+            }
+        );
+
+        await rabbitChannel.assertQueue(
+            FILA_RESULTADO,
+
+            {
+                durable: true
+            }
+        );
+
+        await rabbitChannel.prefetch(
+            1
+        );
+
+        console.log(
+            "✅ RabbitMQ conectado."
+        );
+
+        await consumirResultadosAnomalias(
+            client
+        );
+
+        await tentarPublicarAnalisesPendentes();
+
+    } finally {
+        rabbitConectando =
+            false;
+    }
+}
+
+function iniciarRabbitEmBackground(
+    client
+) {
+    conectarRabbitUmaVez(
+        client
+    ).catch(
+        erro =>
+            console.error(
+                "⚠️ RabbitMQ indisponível:",
+                erro.message
+            )
+    );
+
+    setInterval(
+        async () => {
+            if (
+                !rabbitChannel
+            ) {
+                await conectarRabbitUmaVez(
+                    client
+                ).catch(
+                    erro =>
+                        console.error(
+                            "⚠️ Falha reconectando RabbitMQ:",
+                            erro.message
+                        )
+                );
+
+                return;
+            }
+
+            await tentarPublicarAnalisesPendentes()
+                .catch(
+                    erro =>
+                        console.error(
+                            erro
+                        )
+                );
+        },
+
+        15000
+    );
 }
 
 // =====================================================
@@ -865,29 +1617,18 @@ function configurarMonitoramentoDeReacoes(
                     "=============================="
                 );
 
-                // =============================================
-                // MESSAGE ID
-                // =============================================
-
                 const idMensagemReagida =
                     reaction.msgId?._serialized ||
                     reaction.msgId;
-
-                console.log(
-                    "Mensagem reagida:",
-                    idMensagemReagida
-                );
-
-                // =============================================
-                // MONITORAMENTO
-                // =============================================
 
                 const monitoramento =
                     monitoramentos.get(
                         idMensagemReagida
                     );
 
-                if (!monitoramento) {
+                if (
+                    !monitoramento
+                ) {
                     console.log(
                         "⚠️ Essa mensagem não está sendo monitorada."
                     );
@@ -895,36 +1636,16 @@ function configurarMonitoramentoDeReacoes(
                     return;
                 }
 
-                console.log(
-                    "Grupo:",
-                    monitoramento.grupoNome
-                );
-
-                // =============================================
-                // PARTICIPANTE
-                // =============================================
-
                 const participantId =
                     reaction.id?.participant ||
                     reaction.author ||
                     reaction.from;
 
-                if (!participantId) {
-                    console.log(
-                        "⚠️ Participante não identificado."
-                    );
-
+                if (
+                    !participantId
+                ) {
                     return;
                 }
-
-                console.log(
-                    "Participante:",
-                    participantId
-                );
-
-                // =============================================
-                // EMOTE
-                // =============================================
 
                 const emote =
                     reaction.reactionText ||
@@ -933,33 +1654,12 @@ function configurarMonitoramentoDeReacoes(
                 const isDeleted =
                     emote === "";
 
-                console.log(
-                    "Emote:",
-                    isDeleted
-                        ? "(removido)"
-                        : emote
-                );
-
-                // =============================================
-                // RESULTADO
-                // =============================================
-
                 const resultado =
                     isDeleted
                         ? null
                         : identificarResultado(
                             emote
                         );
-
-                console.log(
-                    "Resultado:",
-                    resultado ||
-                    "IGNORADO"
-                );
-
-                // =============================================
-                // CONTATO
-                // =============================================
 
                 let name = "";
                 let telefone = "";
@@ -970,7 +1670,9 @@ function configurarMonitoramentoDeReacoes(
                             participantId
                         );
 
-                    if (contato) {
+                    if (
+                        contato
+                    ) {
                         name =
                             contato.name ||
                             contato.pushname ||
@@ -991,18 +1693,18 @@ function configurarMonitoramentoDeReacoes(
                     );
                 }
 
-                // =============================================
-                // FALLBACK NOME
-                // =============================================
-
-                if (!name) {
+                if (
+                    !name
+                ) {
                     try {
                         const mensagem =
                             await client.getMessageById(
                                 idMensagemReagida
                             );
 
-                        if (mensagem?.sender) {
+                        if (
+                            mensagem?.sender
+                        ) {
                             name =
                                 mensagem.sender.pushname ||
                                 mensagem.sender.formattedName ||
@@ -1010,41 +1712,29 @@ function configurarMonitoramentoDeReacoes(
                         }
 
                     } catch (erro) {
-                        console.log(
-                            "⚠️ Não foi possível obter sender:",
-                            erro.message
-                        );
+                        // fallback silencioso
                     }
                 }
 
-                // @LID NÃO É TELEFONE
-
                 if (
                     telefone &&
-                    telefone.includes("@")
+                    telefone.includes(
+                        "@"
+                    )
                 ) {
                     telefone = "";
                 }
 
-                // =============================================
-                // TIMESTAMP
-                // =============================================
-
                 const timestamp =
                     reaction.timestamp ||
                     Math.floor(
-                        Date.now() / 1000
+                        Date.now() /
+                        1000
                     );
 
-                // =============================================
-                // REAÇÃO REMOVIDA
-                // =============================================
-
-                if (isDeleted) {
-                    console.log(
-                        "\n🗑️ PROCESSANDO REMOÇÃO..."
-                    );
-
+                if (
+                    isDeleted
+                ) {
                     await deletarReacaoMongo(
                         idMensagemReagida,
                         participantId
@@ -1054,17 +1744,7 @@ function configurarMonitoramentoDeReacoes(
                         participantId
                     );
 
-                }
-
-                // =============================================
-                // REAÇÃO ADICIONADA
-                // =============================================
-
-                else {
-                    console.log(
-                        "\n💾 PROCESSANDO REAÇÃO..."
-                    );
-
+                } else {
                     const dadosReacao = {
                         messageId:
                             idMensagemReagida,
@@ -1080,15 +1760,10 @@ function configurarMonitoramentoDeReacoes(
                             false,
 
                         participantId,
-
                         name,
-
                         telefone,
-
                         emote,
-
                         resultado,
-
                         timestamp
                     };
 
@@ -1098,33 +1773,20 @@ function configurarMonitoramentoDeReacoes(
 
                     monitoramento.reacoes.set(
                         participantId,
+
                         {
-                            fromMe:
-                                dadosReacao.fromMe,
+                            ...dadosReacao,
+                            isDeleted:
+                                false,
 
-                            participantId,
-
-                            name,
-
-                            telefone,
-
-                            emote,
-
-                            resultado,
-
-                            isDeleted: false,
-
-                            timestamp,
-
-                            total: 0
+                            total:
+                                0
                         }
                     );
 
-                    // =========================================
-                    // NOTIFICAÇÃO
-                    // =========================================
-
-                    if (resultado) {
+                    if (
+                        resultado
+                    ) {
                         await enviarNotificacaoReacao({
                             client,
 
@@ -1132,18 +1794,14 @@ function configurarMonitoramentoDeReacoes(
                                 monitoramento.grupoNome,
 
                             emote,
-
                             name,
 
                             timestamp:
-                                timestamp * 1000
+                                timestamp *
+                                1000
                         });
                     }
                 }
-
-                // =============================================
-                // TOTAL
-                // =============================================
 
                 const total =
                     await contarReacoes(
@@ -1154,73 +1812,18 @@ function configurarMonitoramentoDeReacoes(
                     const registro
                     of monitoramento.reacoes.values()
                 ) {
-                    registro.total = total;
+                    registro.total =
+                        total;
                 }
-
-                const registroAtual =
-                    monitoramento.reacoes.get(
-                        participantId
-                    );
-
-                console.log(
-                    "\n===== JSON DA REAÇÃO ====="
-                );
-
-                console.log(
-                    JSON.stringify(
-                        registroAtual ||
-                        {
-                            participantId,
-                            name,
-                            telefone,
-                            emote,
-                            resultado,
-                            isDeleted,
-                            timestamp,
-                            total
-                        },
-                        null,
-                        2
-                    )
-                );
-
-                const reacoesMongo =
-                    await buscarReacoes(
-                        idMensagemReagida
-                    );
-
-                console.log(
-                    "\n===== REAÇÕES NO MONGODB ====="
-                );
-
-                console.log(
-                    JSON.stringify(
-                        reacoesMongo,
-                        null,
-                        2
-                    )
-                );
-
-                console.log(
-                    "\nGrupo:",
-                    monitoramento.grupoNome
-                );
 
                 console.log(
                     "Total:",
                     total
                 );
 
-                console.log(
-                    "==============================\n"
-                );
-
             } catch (erro) {
                 console.error(
-                    "\n❌ ERRO AO PROCESSAR REAÇÃO:"
-                );
-
-                console.error(
+                    "\n❌ ERRO AO PROCESSAR REAÇÃO:",
                     erro
                 );
             }
@@ -1229,12 +1832,13 @@ function configurarMonitoramentoDeReacoes(
 }
 
 // =====================================================
-// INICIA / RECUPERA MONITORAMENTO
+// INICIA MONITORAMENTO
 // =====================================================
 
 async function iniciarMonitoramento({
     mensagem = null,
-    messageId: messageIdInformado = null,
+    messageId:
+        messageIdInformado = null,
     grupoId,
     grupoNome,
     inicio = new Date(),
@@ -1249,36 +1853,29 @@ async function iniciarMonitoramento({
         mensagem?.id?._serialized ||
         mensagem?.id;
 
-    if (!messageId) {
+    if (
+        !messageId
+    ) {
         throw new Error(
             `Não foi possível identificar o messageId de ${grupoNome}.`
         );
     }
-
-    // =============================================
-    // JÁ ESTÁ MONITORANDO
-    // =============================================
 
     const existente =
         monitoramentos.get(
             messageId
         );
 
-    if (existente) {
+    if (
+        existente
+    ) {
         return existente;
     }
 
-    const agora = new Date();
-
-    // =============================================
-    // CICLO JÁ TERMINOU
-    // =============================================
-
-    if (fim <= agora) {
-        console.log(
-            `⚠️ Monitoramento ignorado para ${grupoNome}: ciclo encerrado.`
-        );
-
+    if (
+        fim <=
+        new Date()
+    ) {
         return null;
     }
 
@@ -1290,8 +1887,10 @@ async function iniciarMonitoramento({
         inicio,
         fim,
         recuperado,
-        reacoes: new Map(),
-        timeout: null
+        reacoes:
+            new Map(),
+        timeout:
+            null
     };
 
     monitoramentos.set(
@@ -1299,52 +1898,15 @@ async function iniciarMonitoramento({
         monitoramento
     );
 
-    // =============================================
-    // RECUPERA REAÇÕES EXISTENTES
-    // =============================================
-
     const totalRecuperado =
         await carregarReacoesNoMonitoramento(
             monitoramento
         );
 
     console.log(
-        "\n================================="
-    );
-
-    console.log(
         recuperado
-            ? " MONITORAMENTO RECUPERADO"
-            : " MONITORAMENTO INICIADO"
-    );
-
-    console.log(
-        "================================="
-    );
-
-    console.log(
-        "Mensagem:",
-        messageId
-    );
-
-    console.log(
-        "Grupo:",
-        grupoNome
-    );
-
-    console.log(
-        "Grupo ID:",
-        grupoId
-    );
-
-    console.log(
-        "Início do ciclo:",
-        inicio.toLocaleString("pt-BR")
-    );
-
-    console.log(
-        "Fim do ciclo:",
-        fim.toLocaleString("pt-BR")
+            ? `♻️ Monitoramento recuperado: ${grupoNome}`
+            : `✅ Monitoramento iniciado: ${grupoNome}`
     );
 
     console.log(
@@ -1352,28 +1914,10 @@ async function iniciarMonitoramento({
         totalRecuperado
     );
 
-    // =============================================
-    // NÃO APAGA MAIS AS REAÇÕES
-    // =============================================
-
-    /*
-     * IMPORTANTE:
-     *
-     * A versão anterior fazia:
-     *
-     * reacoesCollection.deleteMany({ messageId })
-     *
-     * Isso não pode ser feito aqui porque em caso
-     * de restart apagaríamos votos já registrados.
-     */
-
-    // =============================================
-    // TEMPO RESTANTE
-    // =============================================
-
     const tempoRestante =
         Math.max(
             1,
+
             fim.getTime() -
             Date.now()
         );
@@ -1382,23 +1926,6 @@ async function iniciarMonitoramento({
         setTimeout(
             async () => {
                 try {
-                    console.log(
-                        "\n================================="
-                    );
-
-                    console.log(
-                        " MONITORAMENTO ENCERRADO"
-                    );
-
-                    console.log(
-                        "================================="
-                    );
-
-                    console.log(
-                        "Grupo:",
-                        grupoNome
-                    );
-
                     await mostrarReacoes(
                         messageId
                     );
@@ -1407,13 +1934,8 @@ async function iniciarMonitoramento({
                         messageId
                     );
 
-                    console.log(
-                        `Monitoramento removido: ${grupoNome}`
-                    );
-
                 } catch (erro) {
                     console.error(
-                        "❌ Erro ao encerrar monitoramento:",
                         erro
                     );
                 }
@@ -1432,21 +1954,19 @@ async function iniciarMonitoramento({
 async function mostrarReacoes(
     messageId
 ) {
-    console.log(
-        "\n===== REAÇÕES ATUAIS ====="
-    );
-
-    const monitoramento =
-        monitoramentos.get(
-            messageId
-        );
-
     const registros =
         await buscarReacoes(
             messageId
         );
 
-    if (registros.length === 0) {
+    console.log(
+        "\n===== REAÇÕES ATUAIS ====="
+    );
+
+    if (
+        registros.length ===
+        0
+    ) {
         console.log(
             "Nenhuma reação registrada."
         );
@@ -1454,14 +1974,10 @@ async function mostrarReacoes(
         return;
     }
 
-    console.log(
-        "Grupo:",
-        monitoramento?.grupoNome ||
-        registros[0]?.grupoNome ||
-        "Desconhecido"
-    );
-
-    for (const registro of registros) {
+    for (
+        const registro
+        of registros
+    ) {
         console.log(
             `${registro.emote} ${
                 registro.name ||
@@ -1475,10 +1991,6 @@ async function mostrarReacoes(
 
     console.log(
         `Total: ${registros.length}`
-    );
-
-    console.log(
-        "==========================\n"
     );
 }
 
@@ -1512,30 +2024,14 @@ async function encontrarGrupos(
 async function enviarChecagemParaGrupo({
     client,
     grupo,
-    cicloInfo = obterCicloAtivo(
-        new Date()
-    )
+    cicloInfo =
+        obterCicloAtivo(
+            new Date()
+        )
 }) {
     console.log(
-        "\n================================="
+        `📤 Preparando checagem para ${grupo.name}`
     );
-
-    console.log(
-        " PREPARANDO CHECAGEM"
-    );
-
-    console.log(
-        "================================="
-    );
-
-    console.log(
-        "Grupo:",
-        grupo.name
-    );
-
-    // =============================================
-    // IMAGEM DO DIA
-    // =============================================
 
     const nomeImagem =
         obterNomeImagemAtual(
@@ -1549,7 +2045,11 @@ async function enviarChecagemParaGrupo({
             nomeImagem
         );
 
-    if (!fs.existsSync(imagem)) {
+    if (
+        !fs.existsSync(
+            imagem
+        )
+    ) {
         console.error(
             `❌ Imagem não encontrada: ${imagem}`
         );
@@ -1563,10 +2063,16 @@ async function enviarChecagemParaGrupo({
     const data =
         agora.toLocaleDateString(
             "pt-BR",
+
             {
-                day: "2-digit",
-                month: "2-digit",
-                year: "numeric"
+                day:
+                    "2-digit",
+
+                month:
+                    "2-digit",
+
+                year:
+                    "numeric"
             }
         );
 
@@ -1582,122 +2088,26 @@ async function enviarChecagemParaGrupo({
         `https://www.server-home.space/\n\n` +
         `Boa checagem a todos. 🫡🍆`;
 
-    try {
-        // =============================================
-        // PROTEÇÃO CONTRA DUPLICIDADE
-        // =============================================
-
-        const envioExistente =
-            await buscarEnvioDoCiclo(
-                grupo.id._serialized,
-                cicloInfo.ciclo
-            );
-
-        if (envioExistente) {
-            console.log(
-                `♻️ ${grupo.name} já possui checagem no ciclo ${cicloInfo.ciclo}.`
-            );
-
-            console.log(
-                "Mensagem:",
-                envioExistente.messageId
-            );
-
-            ultimosEnvios.set(
-                normalizarNomeGrupo(
-                    grupo.name
-                ),
-                cicloInfo.ciclo
-            );
-
-            await iniciarMonitoramento({
-                messageId:
-                    envioExistente.messageId,
-
-                grupoId:
-                    grupo.id._serialized,
-
-                grupoNome:
-                    grupo.name,
-
-                inicio:
-                    cicloInfo.inicio,
-
-                fim:
-                    cicloInfo.fim,
-
-                recuperado:
-                    true
-            });
-
-            return;
-        }
-
-        // =============================================
-        // ENVIA
-        // =============================================
-
-        console.log(
-            "Enviando imagem..."
+    const envioExistente =
+        await buscarEnvioDoCiclo(
+            grupo.id._serialized,
+            cicloInfo.ciclo
         );
 
-        const mensagem =
-            await client.sendImage(
-                grupo.id._serialized,
-                imagem,
-                nomeImagem,
-                legenda
-            );
+    if (
+        envioExistente
+    ) {
+        ultimosEnvios.set(
+            normalizarNomeGrupo(
+                grupo.name
+            ),
 
-        if (!mensagem) {
-            console.error(
-                `❌ WhatsApp não retornou mensagem para ${grupo.name}`
-            );
-
-            return;
-        }
-
-        const messageId =
-            mensagem.id?._serialized ||
-            mensagem.id;
-
-        console.log(
-            `✅ Checagem enviada para: ${grupo.name}`
+            cicloInfo.ciclo
         );
-
-        console.log(
-            "Mensagem:",
-            messageId
-        );
-
-        // =============================================
-        // SALVA O ENVIO
-        // =============================================
-
-        await salvarEnvioMongo({
-            messageId,
-
-            grupoId:
-                grupo.id._serialized,
-
-            grupoNome:
-                grupo.name,
-
-            ciclo:
-                cicloInfo.ciclo,
-
-            enviadoEm:
-                agora
-        });
-
-        // =============================================
-        // MONITORAMENTO
-        // =============================================
 
         await iniciarMonitoramento({
-            mensagem,
-
-            messageId,
+            messageId:
+                envioExistente.messageId,
 
             grupoId:
                 grupo.id._serialized,
@@ -1712,36 +2122,89 @@ async function enviarChecagemParaGrupo({
                 cicloInfo.fim,
 
             recuperado:
-                false
+                true
         });
 
-        ultimosEnvios.set(
-            normalizarNomeGrupo(
-                grupo.name
-            ),
-            cicloInfo.ciclo
-        );
-
-    } catch (erro) {
-        console.error(
-            `❌ Erro enviando para ${grupo.name}:`,
-            erro
-        );
-
-        throw erro;
+        return;
     }
+
+    const mensagem =
+        await client.sendImage(
+            grupo.id._serialized,
+            imagem,
+            nomeImagem,
+            legenda
+        );
+
+    if (
+        !mensagem
+    ) {
+        throw new Error(
+            `WhatsApp não retornou mensagem para ${grupo.name}`
+        );
+    }
+
+    const messageId =
+        mensagem.id?._serialized ||
+        mensagem.id;
+
+    await salvarEnvioMongo({
+        messageId,
+
+        grupoId:
+            grupo.id._serialized,
+
+        grupoNome:
+            grupo.name,
+
+        ciclo:
+            cicloInfo.ciclo,
+
+        enviadoEm:
+            agora
+    });
+
+    await iniciarMonitoramento({
+        mensagem,
+        messageId,
+
+        grupoId:
+            grupo.id._serialized,
+
+        grupoNome:
+            grupo.name,
+
+        inicio:
+            cicloInfo.inicio,
+
+        fim:
+            cicloInfo.fim,
+
+        recuperado:
+            false
+    });
+
+    ultimosEnvios.set(
+        normalizarNomeGrupo(
+            grupo.name
+        ),
+
+        cicloInfo.ciclo
+    );
+
+    console.log(
+        `✅ Checagem enviada: ${grupo.name}`
+    );
 }
 
 // =====================================================
-// ENVIA PARA GRUPO PELO NOME
+// ENVIA POR NOME
 // =====================================================
 
 async function enviarChecagemParaGrupoPorNome(
     client,
     nomeGrupo,
-    cicloInfo = obterCicloAtivo(
-        new Date()
-    )
+    cicloInfo
 ) {
     const grupos =
         await encontrarGrupos(
@@ -1761,7 +2224,9 @@ async function enviarChecagemParaGrupoPorNome(
                 ) === alvo
         );
 
-    if (!grupo) {
+    if (
+        !grupo
+    ) {
         throw new Error(
             `Grupo "${nomeGrupo}" não encontrado.`
         );
@@ -1775,84 +2240,7 @@ async function enviarChecagemParaGrupoPorNome(
 }
 
 // =====================================================
-// ENVIA PARA TODOS
-// =====================================================
-
-async function enviarChecagemParaTodos(
-    client
-) {
-    console.log(
-        "\n================================="
-    );
-
-    console.log(
-        " ENVIANDO CHECAGEM PARA GRUPOS"
-    );
-
-    console.log(
-        "================================="
-    );
-
-    console.log(
-        "Quantidade:",
-        config.grupos.length
-    );
-
-    if (config.grupos.length === 0) {
-        console.log(
-            "⚠️ Nenhum grupo configurado."
-        );
-
-        return;
-    }
-
-    const gruposWhatsApp =
-        await encontrarGrupos(
-            client
-        );
-
-    const cicloInfo =
-        obterCicloAtivo(
-            new Date()
-        );
-
-    for (
-        const nomeGrupo
-        of config.grupos
-    ) {
-        const grupo =
-            gruposWhatsApp.find(
-                grupo =>
-                    normalizarNomeGrupo(
-                        grupo.name
-                    ) ===
-                    normalizarNomeGrupo(
-                        nomeGrupo
-                    )
-            );
-
-        if (!grupo) {
-            console.error(
-                `❌ Grupo "${nomeGrupo}" não encontrado.`
-            );
-
-            continue;
-        }
-
-        await enviarChecagemParaGrupo({
-            client,
-            grupo,
-            cicloInfo
-        });
-
-        await esperar(
-            config.intervalo_reacao
-        );
-    }
-}
-
-// =====================================================
-// RECUPERA CHECAGENS APÓS RESTART
+// RECUPERA OU GARANTE CHECAGENS
 // =====================================================
 
 async function recuperarOuGarantirChecagens(
@@ -1878,24 +2266,26 @@ async function recuperarOuGarantirChecagens(
             agora
         );
 
-    console.log(
-        "Ciclo ativo:",
-        cicloInfo.ciclo
-    );
+    const horarioHoje =
+        horarioEmData(
+            agora,
+            config.horario_envio
+        );
 
-    console.log(
-        "Início:",
-        cicloInfo.inicio.toLocaleString(
-            "pt-BR"
-        )
-    );
-
-    console.log(
-        "Próximo envio:",
-        cicloInfo.fim.toLocaleString(
-            "pt-BR"
-        )
-    );
+    if (
+        agora >=
+            horarioHoje &&
+        chaveDataLocal(
+            cicloInfo.inicio
+        ) ===
+            chaveDataLocal(
+                horarioHoje
+            )
+    ) {
+        solicitarAnaliseDoCiclo(
+            cicloInfo
+        );
+    }
 
     const gruposWhatsApp =
         await encontrarGrupos(
@@ -1919,9 +2309,11 @@ async function recuperarOuGarantirChecagens(
                     ) === alvo
             );
 
-        if (!grupo) {
+        if (
+            !grupo
+        ) {
             console.error(
-                `❌ Grupo "${nomeGrupo}" não encontrado durante recuperação.`
+                `❌ Grupo "${nomeGrupo}" não encontrado.`
             );
 
             continue;
@@ -1930,21 +2322,15 @@ async function recuperarOuGarantirChecagens(
         const grupoId =
             grupo.id._serialized;
 
-        // =============================================
-        // PROCURA NA NOVA COLEÇÃO
-        // =============================================
-
         let envio =
             await buscarEnvioDoCiclo(
                 grupoId,
                 cicloInfo.ciclo
             );
 
-        // =============================================
-        // FALLBACK PARA VERSÃO ANTIGA
-        // =============================================
-
-        if (!envio) {
+        if (
+            !envio
+        ) {
             envio =
                 await buscarEnvioLegadoPelasReacoes({
                     grupoId,
@@ -1963,20 +2349,9 @@ async function recuperarOuGarantirChecagens(
                 });
         }
 
-        // =============================================
-        // EXISTE MENSAGEM
-        // =============================================
-
-        if (envio) {
-            console.log(
-                `♻️ Recuperando mensagem de ${grupo.name}`
-            );
-
-            console.log(
-                "Message ID:",
-                envio.messageId
-            );
-
+        if (
+            envio
+        ) {
             ultimosEnvios.set(
                 alvo,
                 cicloInfo.ciclo
@@ -2004,27 +2379,6 @@ async function recuperarOuGarantirChecagens(
             continue;
         }
 
-        // =============================================
-        // NÃO EXISTE MENSAGEM
-        // =============================================
-
-        /*
-         * Estamos dentro de um ciclo que já começou.
-         *
-         * Portanto, se não existe mensagem registrada,
-         * enviamos AGORA.
-         *
-         * Não importa se são 08:01, 12:00 ou 22:00.
-         */
-
-        console.log(
-            `⚠️ Nenhuma checagem encontrada para ${grupo.name} no ciclo ${cicloInfo.ciclo}.`
-        );
-
-        console.log(
-            "📤 Horário do ciclo já passou. Enviando agora..."
-        );
-
         await enviarChecagemParaGrupo({
             client,
             grupo,
@@ -2035,10 +2389,6 @@ async function recuperarOuGarantirChecagens(
             config.intervalo_reacao
         );
     }
-
-    console.log(
-        "=================================\n"
-    );
 }
 
 // =====================================================
@@ -2057,9 +2407,10 @@ async function verificarHorarioEnvio(
             config.horario_envio
         );
 
-    // Ainda não chegou o horário de hoje.
-
-    if (agora < horarioHoje) {
+    if (
+        agora <
+        horarioHoje
+    ) {
         return;
     }
 
@@ -2067,6 +2418,27 @@ async function verificarHorarioEnvio(
         chaveDataLocal(
             horarioHoje
         );
+
+    const fimCicloHoje =
+        new Date(
+            horarioHoje
+        );
+
+    fimCicloHoje.setDate(
+        fimCicloHoje.getDate() +
+        1
+    );
+
+    solicitarAnaliseDoCiclo({
+        ciclo:
+            cicloHoje,
+
+        inicio:
+            horarioHoje,
+
+        fim:
+            fimCicloHoje
+    });
 
     for (
         const nomeGrupo
@@ -2077,8 +2449,6 @@ async function verificarHorarioEnvio(
                 nomeGrupo
             );
 
-        // Já processamos esse ciclo em memória.
-
         if (
             ultimosEnvios.get(
                 chave
@@ -2087,26 +2457,16 @@ async function verificarHorarioEnvio(
             continue;
         }
 
-        // Marca antes para evitar concorrência.
-
         ultimosEnvios.set(
             chave,
             cicloHoje
-        );
-
-        const fim =
-            new Date(
-                horarioHoje
-            );
-
-        fim.setDate(
-            fim.getDate() + 1
         );
 
         try {
             await enviarChecagemParaGrupoPorNome(
                 client,
                 nomeGrupo,
+
                 {
                     ciclo:
                         cicloHoje,
@@ -2114,7 +2474,8 @@ async function verificarHorarioEnvio(
                     inicio:
                         horarioHoje,
 
-                    fim
+                    fim:
+                        fimCicloHoje
                 }
             );
 
@@ -2123,8 +2484,6 @@ async function verificarHorarioEnvio(
                 `❌ Erro no envio para ${nomeGrupo}:`,
                 erro
             );
-
-            // Permite tentar novamente.
 
             ultimosEnvios.delete(
                 chave
@@ -2149,15 +2508,19 @@ function iniciarScheduler(
         config.horario_envio
     );
 
-    let verificando = false;
+    let verificando =
+        false;
 
     setInterval(
         async () => {
-            if (verificando) {
+            if (
+                verificando
+            ) {
                 return;
             }
 
-            verificando = true;
+            verificando =
+                true;
 
             try {
                 await verificarHorarioEnvio(
@@ -2171,7 +2534,8 @@ function iniciarScheduler(
                 );
 
             } finally {
-                verificando = false;
+                verificando =
+                    false;
             }
         },
 
@@ -2203,14 +2567,18 @@ async function esperarWhatsAppPronto(
                 `Tentativa ${tentativa}/30 - Estado: ${estado}`
             );
 
-            if (estado === "CONNECTED") {
+            if (
+                estado ===
+                "CONNECTED"
+            ) {
                 try {
                     const chats =
                         await client.listChats();
 
                     if (
                         chats &&
-                        chats.length > 0
+                        chats.length >
+                            0
                     ) {
                         console.log(
                             `WhatsApp pronto! ${chats.length} chats carregados.`
@@ -2261,29 +2629,13 @@ async function start(
         "=================================\n"
     );
 
-    console.log(
-        "WhatsApp conectado!"
-    );
-
-    // =============================================
-    // CONFIG
-    // =============================================
-
     carregarConfig();
 
     monitorarArquivoConfig();
 
-    // =============================================
-    // LISTENER REAÇÕES
-    // =============================================
-
     configurarMonitoramentoDeReacoes(
         client
     );
-
-    // =============================================
-    // AGUARDA WHATSAPP
-    // =============================================
 
     await esperarWhatsAppPronto(
         client
@@ -2293,9 +2645,12 @@ async function start(
         "WhatsApp sincronizado!"
     );
 
-    // =============================================
-    // GRUPOS
-    // =============================================
+    // RabbitMQ funciona em background.
+    // Se estiver fora do ar,
+    // o WhatsApp continua funcionando.
+    iniciarRabbitEmBackground(
+        client
+    );
 
     console.log(
         "\n================================="
@@ -2322,28 +2677,9 @@ async function start(
         "=================================\n"
     );
 
-    // =============================================
-    // RECUPERA ESTADO
-    // =============================================
-
-    /*
-     * ESSA É A PARTE MAIS IMPORTANTE PARA O RESTART.
-     *
-     * Antes de iniciar o scheduler:
-     *
-     * 1. descobre o ciclo atual;
-     * 2. procura messageId no Mongo;
-     * 3. recupera monitoramento;
-     * 4. se não houver mensagem, envia imediatamente.
-     */
-
     await recuperarOuGarantirChecagens(
         client
     );
-
-    // =============================================
-    // SCHEDULER
-    // =============================================
 
     iniciarScheduler(
         client
@@ -2425,27 +2761,60 @@ async function encerrar(
     );
 
     try {
-        if (mongoClient) {
+        if (
+            rabbitChannel
+        ) {
+            try {
+                await rabbitChannel.close();
+            } catch (_) {
+                // já fechado
+            }
+        }
+
+        if (
+            rabbitConnection
+        ) {
+            try {
+                await rabbitConnection.close();
+            } catch (_) {
+                // já fechado
+            }
+        }
+
+        if (
+            mongoClient
+        ) {
             await mongoClient.close();
         }
+
     } catch (erro) {
         console.error(
-            "Erro fechando MongoDB:",
+            "Erro fechando conexões:",
             erro.message
         );
     }
 
-    process.exit(0);
+    process.exit(
+        0
+    );
 }
 
 process.on(
     "SIGINT",
-    () => encerrar("SIGINT")
+
+    () =>
+        encerrar(
+            "SIGINT"
+        )
 );
 
 process.on(
     "SIGTERM",
-    () => encerrar("SIGTERM")
+
+    () =>
+        encerrar(
+            "SIGTERM"
+        )
 );
 
 // =====================================================
