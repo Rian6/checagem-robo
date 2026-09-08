@@ -354,24 +354,49 @@ function carregarConfig() {
 // MONITORA CONFIG.JSON
 // =====================================================
 
-function monitorarArquivoConfig() {
+function monitorarArquivoConfig(client) {
     fs.watchFile(
         CONFIG_PATH,
-
         {
             interval: 1000
         },
 
-        (curr, prev) => {
+        async (curr, prev) => {
             if (
-                curr.mtimeMs !==
+                curr.mtimeMs ===
                 prev.mtimeMs
             ) {
-                console.log(
-                    "\n🔄 config.json alterado!"
+                return;
+            }
+
+            console.log(
+                "\n🔄 config.json alterado!"
+            );
+
+            carregarConfig();
+
+            console.log(
+                "🔎 Recarregando grupos configurados..."
+            );
+
+            // Dá um pequeno tempo para terminar
+            // a leitura/configuração.
+            await esperar(1000);
+
+            try {
+                await recuperarOuGarantirChecagens(
+                    client
                 );
 
-                carregarConfig();
+                console.log(
+                    "✅ Grupos sincronizados após alteração do config."
+                );
+
+            } catch (erro) {
+                console.error(
+                    "❌ Erro sincronizando grupos após alterar config:",
+                    erro
+                );
             }
         }
     );
@@ -2637,7 +2662,7 @@ async function start(
 
     carregarConfig();
 
-    monitorarArquivoConfig();
+    monitorarArquivoConfig(client);
 
     configurarMonitoramentoDeReacoes(
         client
